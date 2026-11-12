@@ -352,3 +352,22 @@ a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: 2px; 
 /* ＋ Chat and ⤢ sit together at the right of a pane's tab bar */
 .pane-new { margin-left: auto; align-self: flex-start; padding: 2px 10px; font-size: 13px; }
 .pane-new + .pane-zoom { margin-left: 0; }
+
+/* Tasks, task output, sessions, renaming */
+.popover.tasks, .popover.sessions { width: min(560px, 86vw); max-height: 70vh; }
+.task-group { padding: 8px 0; border-top: var(--b) solid var(--edge); }
+.task-owner { font-weight: 700; padding: 2px 4px; border-radius: 4px; }
+.task-owner:hover { background: var(--c-yellow); color: #000; }
+.task-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 4px; }
+.task-row .tag { flex: 0 0 auto; }
+.task-kind { flex: 0 0 auto; }
+.task-text { flex: 1; min-width: 0; font-size: 13px; word-break: break-word; }
+.modal.output { width: min(960px, 94vw); }
+.output-text {
+  margin: 0; max-height: 70vh; overflow: auto; padding: 12px; font: 12px/1.4 var(--mono); white-space: pre-wrap; word-break: break-word;
+  background: var(--term-bg); color: #f4f4f0; border: var(--b) solid var(--edge); border-radius: var(--radius);
+}
+.session-row { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-top: var(--b) solid var(--edge); }
+.session-main { flex: 1; min-width: 0; }
+.session-actions { display: flex; gap: 6px; }
+input.rename { font: inherit; font-weight: 700; width: 160px; padding: 1px 6px; border: var(--b) solid var(--edge); border-radius: 4px; background: var(--bg); color: var(--ink); }

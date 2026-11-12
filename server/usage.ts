@@ -2,7 +2,7 @@ import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import type { TokenUsage } from '../shared/types.js'
+import type { BgTask, TokenUsage } from '../shared/types.js'
 
 // Claude Code writes each conversation to ~/.claude/projects/<folder>/<session id>.jsonl,
 // one line per message, every assistant line carrying the API's usage for that request.
@@ -62,6 +62,10 @@ type Tally = {
   partial: string
   seen: Set<string>
   dayStart: number
+  /** Background tasks by the tool call that started them. */
+  tasks: Map<string, BgTask>
+  /** A task id from its start, mapped to the tool call, so a completion notice finds its task. */
+  taskIds: Map<string, string>
 }
 
 const tallies = new Map<string, Tally>()
@@ -72,9 +76,12 @@ const fresh = (): Tally => ({
   partial: '',
   seen: new Set(),
   dayStart: new Date().setHours(0, 0, 0, 0),
+  tasks: new Map(),
+  taskIds: new Map(),
 })
 
 function count(tally: Tally, raw: string) {
+  if (raw.includes('run_in_background') || raw.includes('backgroundTaskId') || raw.includes('task-notification') || raw.includes('TaskStop')) track(tally, raw)
   if (!raw.includes('"usage"')) return
   let line: Line
   try {
@@ -103,6 +110,84 @@ function count(tally: Tally, raw: string) {
   if (line.timestamp) usage.lastAt = line.timestamp
 }
 
+type ToolUse = { type?: string; id?: string; name?: string; input?: { run_in_background?: boolean; description?: string; command?: string; prompt?: string; task_id?: string } }
+type ToolResult = { type?: string; tool_use_id?: string; content?: unknown }
+type TaskLine = {
+  type?: string
+  timestamp?: string
+  message?: { content?: unknown }
+  toolUseResult?: { backgroundTaskId?: string; agentId?: string }
+}
+
+// The parts of a completion notice: <task-id>, <tool-use-id>, <output-file>, <status>, <summary>.
+const tag = (text: string, name: string) => new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(text)?.[1]?.trim()
+
+/** The first string anywhere in a parsed line that holds a completion notice. */
+function noticeIn(value: unknown): string | undefined {
+  if (typeof value === 'string') return value.includes('<task-notification>') ? value : undefined
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = noticeIn(item)
+      if (found) return found
+    }
+  } else if (value && typeof value === 'object') {
+    for (const item of Object.values(value)) {
+      const found = noticeIn(item)
+      if (found) return found
+    }
+  }
+  return undefined
+}
+
+/** Background work in one transcript line: a task started, its id handed back, or its completion notice. */
+function track(tally: Tally, raw: string) {
+  let line: TaskLine
+  try {
+    line = JSON.parse(raw) as TaskLine
+  } catch {
+    return
+  }
+  const blocks = Array.isArray(line.message?.content) ? (line.message!.content as (ToolUse & ToolResult)[]) : []
+  for (const block of blocks) {
+    if (block.type === 'tool_use' && block.id && block.input?.run_in_background) {
+      const isAgent = block.name === 'Agent' || block.name === 'Task'
+      tally.tasks.set(block.id, {
+        id: block.id,
+        kind: isAgent ? 'agent' : 'shell',
+        description: block.input.description || (block.input.command ?? block.input.prompt ?? block.name ?? 'task').slice(0, 120),
+        status: 'running',
+        startedAt: line.timestamp,
+      })
+    }
+    // A stop sends no completion notice of its own: the stop call is the record.
+    if (block.type === 'tool_use' && block.name === 'TaskStop' && block.input?.task_id) {
+      const stopped = tally.tasks.get(tally.taskIds.get(block.input.task_id) ?? '')
+      if (stopped && stopped.status === 'running') {
+        stopped.status = 'stopped'
+        stopped.endedAt = line.timestamp
+      }
+    }
+    if (block.type === 'tool_result' && block.tool_use_id) {
+      const task = tally.tasks.get(block.tool_use_id)
+      const id = line.toolUseResult?.backgroundTaskId ?? line.toolUseResult?.agentId
+      if (task && id) tally.taskIds.set(id, block.tool_use_id)
+      const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '')
+      const file = /written to: (.+?\.output)/.exec(text)?.[1]
+      if (task && file) task.outputFile = file
+    }
+  }
+  // A notice can sit in a queue record or an attachment; its text is the same either way.
+  const text = raw.includes('task-notification') ? noticeIn(line) : undefined
+  if (!text) return
+  const toolUse = tag(text, 'tool-use-id') ?? tally.taskIds.get(tag(text, 'task-id') ?? '')
+  const task = toolUse ? tally.tasks.get(toolUse) : undefined
+  if (!task) return
+  task.status = tag(text, 'status') ?? task.status
+  task.summary = tag(text, 'summary') ?? task.summary
+  task.outputFile = tag(text, 'output-file') ?? task.outputFile
+  if (line.timestamp && task.status !== 'running') task.endedAt = line.timestamp
+}
+
 /** Reads whatever the transcript gained since the last read. */
 function catchUp(file: string, tally: Tally, size: number) {
   const length = size - tally.offset
@@ -120,8 +205,8 @@ function catchUp(file: string, tally: Tally, size: number) {
   for (const raw of lines) count(tally, raw)
 }
 
-/** Token usage of one Claude Code session, read from its transcript as it grows. */
-export function sessionUsage(sessionId: string): TokenUsage | undefined {
+/** A session's transcript, read up to now: its token use and its background tasks. */
+function tallyOf(sessionId: string): Tally | undefined {
   const file = locate(sessionId)
   if (!file) return undefined
   let size: number
@@ -139,8 +224,15 @@ export function sessionUsage(sessionId: string): TokenUsage | undefined {
   }
   catchUp(file, tally, size)
 
-  return tally.usage
+  return tally
 }
+
+/** Token usage of one Claude Code session, read from its transcript as it grows. */
+export const sessionUsage = (sessionId: string): TokenUsage | undefined => tallyOf(sessionId)?.usage
+
+/** A session's background tasks, newest first. */
+export const sessionTasks = (sessionId: string): BgTask[] =>
+  [...(tallyOf(sessionId)?.tasks.values() ?? [])].sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''))
 
 /**
  * Whether Claude Code has written this session's conversation, so `--resume` can load it.

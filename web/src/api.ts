@@ -65,6 +65,9 @@ export const api = {
   openTerminal: (key: string, body: { prompt?: string; isShellOnly?: boolean }) =>
     call(`/api/terminals/${key}`, { method: 'POST', body: JSON.stringify(body) }),
   closeTerminal: (key: string) => call(`/api/terminals/${key}`, { method: 'DELETE' }),
+  rename: (key: string, name: string) => call(`/api/names/${key}`, { method: 'PUT', body: JSON.stringify({ name }) }),
+  forgetSession: (key: string) => call(`/api/sessions/${key}`, { method: 'DELETE' }),
+  taskOutput: (file: string) => call<{ text: string; isCut: boolean; size: number }>(`/api/task-output?file=${encodeURIComponent(file)}`),
   openPin: (key: string) => call(`/api/pins/${key}`, { method: 'POST' }),
   sendLine: (key: string, text: string) => call(`/api/terminals/${key}/line`, { method: 'POST', body: JSON.stringify({ text }) }),
   removeWorktree: (key: string) => call(`/api/worktrees/${key}`, { method: 'DELETE' }),

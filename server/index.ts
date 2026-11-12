@@ -1,4 +1,5 @@
-import { existsSync, statSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { createServer } from 'node:http'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -6,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import express from 'express'
 import { WebSocketServer } from 'ws'
 
-import type { NewProject, Pin, Prefs, Settings, Snapshot, TokenUsage } from '../shared/types.js'
+import type { BgTask, NewProject, Pin, Prefs, SessionInfo, Settings, Snapshot, TokenUsage } from '../shared/types.js'
 import { checkHealth } from './health.js'
 import { clearServerLog, logError, serverLog } from './log.js'
 import type { Project } from './projects.js'
@@ -23,7 +24,7 @@ import {
   sendLine,
   worktreeKeys,
 } from './terminals.js'
-import { hasTranscript, sessionUsage } from './usage.js'
+import { hasTranscript, sessionTasks, sessionUsage } from './usage.js'
 
 const REFRESH_MS = 5 * 60_000
 
@@ -37,6 +38,28 @@ function usageByKey(p: Project): Record<string, TokenUsage> {
   return out
 }
 
+function sessionsOf(p: Project): SessionInfo[] {
+  return Object.entries(p.saved.sessions).map(([key, sessionId]) => {
+    const usage = sessionUsage(sessionId)
+    return {
+      key,
+      sessionId,
+      hasTranscript: hasTranscript(sessionId),
+      lastAt: usage?.lastAt,
+      tokens: usage ? usage.input + usage.cacheWrite + usage.output : undefined,
+    }
+  })
+}
+
+function tasksOf(p: Project): Record<string, BgTask[]> {
+  const out: Record<string, BgTask[]> = {}
+  for (const [key, sessionId] of Object.entries(p.saved.sessions)) {
+    const tasks = sessionTasks(sessionId)
+    if (tasks.length > 0) out[key] = tasks
+  }
+  return out
+}
+
 // The built page's timestamp: a rebuild changes it, so open windows know to reload.
 const builtPage = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'index.html')
 const buildId = () => (existsSync(builtPage) ? String(statSync(builtPage).mtimeMs) : 'dev')
@@ -47,6 +70,9 @@ const snapshot = (p: Project): Snapshot => ({
   hints: p.hints,
   terminals: listTerminals(p),
   usage: usageByKey(p),
+  names: p.saved.names,
+  sessions: sessionsOf(p),
+  tasks: tasksOf(p),
   scrollback: scrollbackKeys(p),
   resumable: Object.entries(p.saved.sessions)
     .filter(([, id]) => hasTranscript(id))
@@ -215,6 +241,54 @@ app.delete('/api/worktrees/:key', async (req, res) => {
     logError(`${p.config.id}: worktree ${req.params.key}`, caught)
     res.status(409).json({ message: message(caught) })
   }
+})
+
+app.put('/api/names/:key', (req, res) => {
+  const p = projectOf(req)
+  const name = String((req.body as { name?: string })?.name ?? '').trim().slice(0, 60)
+  if (name) p.saved.names[req.params.key] = name
+  else delete p.saved.names[req.params.key]
+  saveState(p)
+  res.json(snapshot(p))
+})
+
+/** Forgets a saved session: its terminal stops and its saved screen goes. Claude keeps its transcript. */
+app.delete('/api/sessions/:key', (req, res) => {
+  const p = projectOf(req)
+  const key = req.params.key
+  closeTerminal(p, key)
+  delete p.saved.sessions[key]
+  delete p.saved.names[key]
+  saveState(p)
+  rmSync(join(p.config.dataDir, 'scrollback', `${key}.log`), { force: true })
+  res.json(snapshot(p))
+})
+
+// Only a background task's own output file may be read: one under the temp folder, ending .output.
+const TEMP = realpathSync(tmpdir()).toLowerCase()
+app.get('/api/task-output', (req, res) => {
+  const file = String(req.query.file ?? '')
+  let real: string
+  try {
+    real = realpathSync(file)
+  } catch {
+    res.status(404).json({ message: 'That output file is gone' })
+    return
+  }
+  if (!real.toLowerCase().startsWith(TEMP) || !real.endsWith('.output')) {
+    res.status(403).json({ message: 'Not a background task output file' })
+    return
+  }
+  const size = statSync(real).size
+  const length = Math.min(size, 64_000)
+  const buffer = Buffer.alloc(length)
+  const fd = openSync(real, 'r')
+  try {
+    readSync(fd, buffer, 0, length, size - length)
+  } finally {
+    closeSync(fd)
+  }
+  res.json({ text: buffer.toString('utf8'), isCut: size > length, size })
 })
 
 app.get('/api/health', async (req, res) => {

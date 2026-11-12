@@ -101,6 +101,28 @@ export type TokenUsage = {
   lastAt?: string
 }
 
+/** A background shell command or agent a Claude session started, as its transcript records it. */
+export type BgTask = {
+  id: string
+  kind: 'shell' | 'agent'
+  description: string
+  /** running, completed, failed, killed: whatever the completion notice said. */
+  status: string
+  startedAt?: string
+  endedAt?: string
+  summary?: string
+  outputFile?: string
+}
+
+/** A saved Claude session of the project: what it is, and whether it can be resumed. */
+export type SessionInfo = {
+  key: string
+  sessionId: string
+  hasTranscript: boolean
+  lastAt?: string
+  tokens?: number
+}
+
 /** One failure for the debug log: from the server, or from the page's own calls. */
 export type LogEntry = { at: number; side: 'server' | 'page'; source: string; message: string }
 
@@ -162,6 +184,11 @@ export type Snapshot = {
   scrollback: string[]
   /** Terminal keys with a Claude conversation that Resume can reopen. */
   resumable: string[]
+  /** Your names for tabs, by terminal key. */
+  names: Record<string, string>
+  sessions: SessionInfo[]
+  /** Background tasks per terminal key, newest first. */
+  tasks: Record<string, BgTask[]>
   /** Ticket ids that have a worktree on disk. */
   worktrees: string[]
   error?: string

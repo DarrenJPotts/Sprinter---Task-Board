@@ -4,12 +4,13 @@ import { WHENS, order, remainingHours, reviewThreads, shortDate, workingDaysLeft
 import { makeRules } from '../../shared/workflow'
 import type { Rules } from '../../shared/workflow'
 import type { PillColor } from '../../shared/model'
-import type { Pin, Prefs, ProjectSummary, Snapshot, Story, TerminalInfo, TokenUsage, When } from '../../shared/types'
+import type { BgTask, Pin, Prefs, ProjectSummary, Snapshot, Story, TerminalInfo, TokenUsage, When } from '../../shared/types'
 import { api, setProject } from './api'
 import { Card, Tag } from './Card'
 import { AddPin, DebugLog, Inbox, NewProjectForm, Reviews, Setup, inboxItems, useSetupProblems } from './Panels'
 import { activate, allTabs, closeTab as closeIn, emptyPane, moveTab, openTab as openIn, panes, setRatio, zoneAt } from './layout'
 import type { LayoutNode, PaneNode, SplitNode, Zone } from './layout'
+import { Sessions, TaskOutput, Tasks } from './Sessions'
 import { Terminal } from './Terminal'
 import { Tour } from './Tour'
 import { tourSteps } from './tourSteps'
@@ -84,6 +85,11 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
   const [isAddPinOpen, setIsAddPinOpen] = useState(false)
   const [isReviewsOpen, setIsReviewsOpen] = useState(false)
   const [isTourOpen, setIsTourOpen] = useState(false)
+  const [isTasksOpen, setIsTasksOpen] = useState(false)
+  const [isSessionsOpen, setIsSessionsOpen] = useState(false)
+  const [outputTask, setOutputTask] = useState<BgTask | null>(null)
+  // The tab being renamed in place, and what has been typed so far.
+  const [renaming, setRenaming] = useState<{ key: string; draft: string } | null>(null)
   const setupProblems = useSetupProblems()
   const [theme, setTheme] = useLocal<Theme>('hq.theme', 'auto')
   const isSystemDark = useSystemDark()
@@ -222,6 +228,8 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
     openTab(key, into)
   }
   const isShown = (key: string) => panes(layout).some(p => p.active === key)
+  const rename = (key: string, name: string) => void run(api.rename(key, name))
+  const runningTasks = Object.values(snap?.tasks ?? {}).flat().filter(task => task.status === 'running').length
   const resumable = new Set(snap?.resumable ?? [])
   // Reopens a terminal as it was: the same Claude conversation with no new prompt, or a plain shell.
   const resume = (key: string) =>
@@ -281,7 +289,9 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
   const isOver = needs > avail
 
   const tabLabel = (key: string) =>
-    isChatKey(key)
+    snap?.names[key]
+      ? snap.names[key]!
+      : isChatKey(key)
       ? chatLabel(key)
       : pinOf(key) ? `${pinOf(key)!.icon} ${pinOf(key)!.label}` : key.endsWith('-shell') ? `${key.replace(/-shell$/, '')} · shell` : key
 
@@ -336,7 +346,27 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
                   }}
                 >
                   {live.has(key) && <span className={`dot ${terminalOf.get(key)?.state ?? ''}`} />}
-                  {tabLabel(key)}
+                  {renaming?.key === key ? (
+                    <input
+                      autoFocus
+                      className="rename"
+                      value={renaming.draft}
+                      onClick={event => event.stopPropagation()}
+                      onChange={event => setRenaming({ key, draft: event.target.value })}
+                      onBlur={() => setRenaming(null)}
+                      onKeyDown={event => {
+                        if (event.key === 'Enter') {
+                          rename(key, renaming.draft)
+                          setRenaming(null)
+                        }
+                        if (event.key === 'Escape') setRenaming(null)
+                      }}
+                    />
+                  ) : (
+                    <span onDoubleClick={() => setRenaming({ key, draft: tabLabel(key).replace(/^💬 /, '') })} title="Double-click to rename">
+                      {tabLabel(key)}
+                    </span>
+                  )}
                   <button
                     className="x"
                     title="Close tab (the terminal keeps running)"
@@ -560,6 +590,49 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
           <button className="tool" onClick={() => void run(api.refresh())}>
             ⟳ Refresh
           </button>
+          <PopHost
+            isOpen={isTasksOpen}
+            button={
+              <button className="tool" onClick={() => setIsTasksOpen(!isTasksOpen)} title="Background shell commands and agents your chats started">
+                🧵 Tasks {runningTasks > 0 && <span className="badge">{runningTasks}</span>}
+              </button>
+            }
+          >
+            <Tasks
+              tasks={snap?.tasks ?? {}}
+              label={tabLabel}
+              onOpen={key => {
+                setIsTasksOpen(false)
+                openTab(key)
+              }}
+              onShowOutput={setOutputTask}
+              onClose={() => setIsTasksOpen(false)}
+            />
+          </PopHost>
+          <PopHost
+            isOpen={isSessionsOpen}
+            button={
+              <button className="tool" onClick={() => setIsSessionsOpen(!isSessionsOpen)} title="Every saved Claude session in this project">
+                📚 Sessions
+              </button>
+            }
+          >
+            <Sessions
+              sessions={snap?.sessions ?? []}
+              terminals={snap?.terminals ?? []}
+              label={tabLabel}
+              onOpen={key => {
+                setIsSessionsOpen(false)
+                openTab(key)
+              }}
+              onRename={rename}
+              onForget={key => {
+                closeTab(key)
+                void run(api.forgetSession(key))
+              }}
+              onClose={() => setIsSessionsOpen(false)}
+            />
+          </PopHost>
           {tabs.length === 0 && (
             <button className="tool" onClick={() => newChat()} title="A blank Claude chat at the repo root">
               💬 New chat
@@ -676,6 +749,7 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
       )}
       {isSetupOpen && <Setup onClose={() => setIsSetupOpen(false)} />}
       {isTourOpen && <Tour steps={tourSteps(rules.workflow)} onClose={closeTour} />}
+      {outputTask && <TaskOutput task={outputTask} onClose={() => setOutputTask(null)} />}
     </div>
   )
 }

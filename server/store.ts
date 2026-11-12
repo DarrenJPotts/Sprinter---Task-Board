@@ -9,9 +9,11 @@ export type Saved = {
   /** Claude Code session id per terminal key, so a ticket's terminal resumes its conversation. */
   sessions: Record<string, string>
   board: Board | null
+  /** Your names for tabs, by terminal key. */
+  names: Record<string, string>
 }
 
-const EMPTY: Saved = { prefs: { when: {}, pinned: [] }, sessions: {}, board: null }
+const EMPTY: Saved = { prefs: { when: {}, pinned: [] }, sessions: {}, board: null, names: {} }
 
 export function loadSaved(dataDir: string): Saved {
   const file = join(dataDir, 'state.json')
