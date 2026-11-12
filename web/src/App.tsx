@@ -95,6 +95,8 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
   }, [theme])
 
   const loadedBuild = useRef<string | undefined>(undefined)
+  // The page polls every few seconds; an answer identical to the last must not redraw the board.
+  const lastAnswer = useRef('')
   const run = useCallback(async (work: Promise<Snapshot>) => {
     try {
       const next = await work
@@ -104,7 +106,11 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
         return
       }
       loadedBuild.current = next.buildId
-      setSnap(next)
+      const text = JSON.stringify(next)
+      if (text !== lastAnswer.current) {
+        lastAnswer.current = text
+        setSnap(next)
+      }
       setProblem(undefined)
     } catch (caught) {
       setProblem(caught instanceof Error ? caught.message : String(caught))

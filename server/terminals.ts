@@ -30,6 +30,10 @@ type Terminal = {
   isAlive: boolean
   scrollback: string
   clients: Set<WebSocket>
+  /** Each attached window's size; the terminal runs at the smallest, so none of them wraps it. */
+  sizes: Map<WebSocket, { cols: number; rows: number }>
+  cols: number
+  rows: number
   isClaude: boolean
   lastOutputAt: number
   lastInputAt: number
@@ -65,6 +69,38 @@ function openLog(p: Project, key: string): WriteStream {
   const file = logPath(p, key)
   if (existsSync(file) && statSync(file).size > LOG_MAX_BYTES) writeFileSync(file, savedScrollback(p, key))
   return createWriteStream(file, { flags: 'a' })
+}
+
+// Variables a Claude Code session sets for its own children. Sprinter's server is often started
+// from one, and a Claude started with them inherited thinks it is a child session: it stops saving
+// its transcript (so it cannot be resumed or counted) and talks to the parent's host instead.
+const INHERITED = /^(CLAUDECODE|CLAUDE_.*|ANTHROPIC_BASE_URL|ANTHROPIC_AUTH_TOKEN)$/
+
+/** The server's environment without the variables of a Claude session it may have been started from. */
+function cleanEnv(): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [name, value] of Object.entries(process.env)) if (value !== undefined && !INHERITED.test(name)) env[name] = value
+  return env
+}
+
+/** Runs the terminal at the smallest size any attached window has, as tmux does. */
+function fitToClients(terminal: Terminal) {
+  if (!terminal.isAlive || terminal.sizes.size === 0) return
+  const sizes = [...terminal.sizes.values()]
+  const cols = Math.max(20, Math.min(...sizes.map(s => s.cols)))
+  const rows = Math.max(5, Math.min(...sizes.map(s => s.rows)))
+  if (cols === terminal.cols && rows === terminal.rows) return
+  terminal.cols = cols
+  terminal.rows = rows
+  terminal.pty.resize(cols, rows)
+}
+
+/** A one-column wiggle: a full-screen program (Claude Code's TUI) repaints on any resize. */
+function redraw(terminal: Terminal) {
+  if (!terminal.isAlive) return
+  const { cols, rows } = terminal
+  terminal.pty.resize(Math.max(20, cols - 1), rows)
+  setTimeout(() => terminal.isAlive && terminal.pty.resize(cols, rows), 60)
 }
 
 export function git(args: string[], cwd: string): Promise<string> {
@@ -150,7 +186,7 @@ export async function openTerminal(
     cols: 120,
     rows: 32,
     cwd,
-    env: { ...process.env, HQ_PROJECT: config.id, HQ_TICKET: ticketOf(key) } as Record<string, string>,
+    env: { ...cleanEnv(), HQ_PROJECT: config.id, HQ_TICKET: ticketOf(key) },
   })
   const terminal: Terminal = {
     project: config.id,
@@ -161,6 +197,9 @@ export async function openTerminal(
     isAlive: true,
     scrollback: running?.scrollback ?? savedScrollback(p, key),
     clients: running?.clients ?? new Set(),
+    sizes: running?.sizes ?? new Map(),
+    cols: 120,
+    rows: 32,
     isClaude: !options.isShellOnly,
     lastOutputAt: Date.now(),
     lastInputAt: Date.now(),
@@ -193,7 +232,7 @@ export async function openTerminal(
     // leaves none, and --resume refuses an id it cannot find.
     const known = saved.sessions[key]
     let command: string
-    if (known && hasTranscript(known)) {
+    if (known && hasTranscript(known, true)) {
       // Same conversation, so the ticket keeps its context; a new prompt goes in as the next turn.
       const prompt = options.isPromptOnlyIfNew ? undefined : options.prompt
       command = `${config.claudeCommand} --resume ${known}${prompt ? ` ${quote(prompt, config.shell)}` : ''}`
@@ -231,9 +270,19 @@ export function attach(p: Project, key: string, socket: WebSocket) {
       terminal.lastInputAt = Date.now()
       terminal.pty.write(message.data)
     }
-    if (message.type === 'resize' && message.cols && message.rows) terminal.pty.resize(message.cols, message.rows)
+    if (message.type === 'resize' && message.cols && message.rows) {
+      const isFirst = !terminal.sizes.has(socket)
+      terminal.sizes.set(socket, { cols: message.cols, rows: message.rows })
+      fitToClients(terminal)
+      // A window that just attached replayed history drawn at other widths: have the program repaint.
+      if (isFirst) redraw(terminal)
+    }
   })
-  socket.on('close', () => terminal.clients.delete(socket))
+  socket.on('close', () => {
+    terminal.clients.delete(socket)
+    terminal.sizes.delete(socket)
+    fitToClients(terminal)
+  })
 }
 
 /**

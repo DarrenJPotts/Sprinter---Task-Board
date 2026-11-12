@@ -1,4 +1,5 @@
 import { FitAddon } from '@xterm/addon-fit'
+import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal as Xterm } from '@xterm/xterm'
 import { useEffect, useRef } from 'react'
 
@@ -36,6 +37,14 @@ export function Terminal({ termKey, isDark, onExit }: { termKey: string; isDark:
     term.loadAddon(fit)
     termRef.current = term
     term.open(host.current)
+    // Draw on the GPU: Claude Code repaints its whole screen often, which the default DOM renderer lags on.
+    try {
+      const gpu = new WebglAddon()
+      gpu.onContextLoss(() => gpu.dispose())
+      term.loadAddon(gpu)
+    } catch {
+      // No WebGL here: the DOM renderer carries on.
+    }
     fit.fit()
 
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
