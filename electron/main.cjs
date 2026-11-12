@@ -1,5 +1,6 @@
 // The desktop shell: the same server and UI as `npm start`, in a window of its own.
-// The server runs under the system Node, so node-pty never needs an Electron rebuild.
+// From source the server runs under the system Node with tsx; the installed app runs its bundled copy
+// under Electron's own Node. node-pty's binary is Node-API, so the same one loads in both.
 // Closing the window hides it to the tray, so the ticket terminals keep running;
 // Quit in the tray menu ends the app.
 const { app, BrowserWindow, Menu, Tray, nativeImage, shell } = require('electron')
@@ -7,7 +8,7 @@ const { spawn } = require('node:child_process')
 const http = require('node:http')
 const path = require('node:path')
 
-const PORT = 7430
+const PORT = Number(process.env.SPRINTER_PORT) || 7430
 const ROOT = path.join(__dirname, '..')
 let server
 let win
@@ -15,6 +16,16 @@ let tray
 let isQuitting = false
 
 function startServer() {
+  if (app.isPackaged) {
+    // The installed app carries no Node and no tsx, so Electron runs the bundled server as plain Node.
+    server = spawn(process.execPath, [path.join(ROOT, 'build', 'server.mjs')], {
+      cwd: ROOT,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+    return
+  }
   server = spawn('node', ['--import', 'tsx', 'server/index.ts'], {
     cwd: ROOT,
     shell: process.platform === 'win32',

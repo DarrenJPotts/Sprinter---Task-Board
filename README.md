@@ -28,7 +28,30 @@ Each project is one repo plus its tracker. Switch with the 📁 button beside th
 - *AI-DLC* is picked automatically when the repo has `ai-dlc.json`. It uses the AI-DLC stage commands and flags stage tasks that lag the board. If a planner writes `.aidlc/notes/sprint-plan-<sprint>.json`, its order and notes show on the cards; without it the board orders cards itself.
 - *Plain* sends one command template per card, `Work on #{id}: {title}` by default.
 
-## Run it
+## Install
+
+Download the latest Windows build from [Releases](https://github.com/DarrenJPotts/Sprinter---Task-Board/releases):
+
+- `Sprinter-Setup-<version>.exe` installs it for your user, with a Start menu entry.
+- `Sprinter-<version>-portable.exe` runs without installing.
+
+The builds are not code-signed, so Windows SmartScreen says "Windows protected your PC" the first time. Choose **More info → Run anyway**.
+
+The app carries its own server and Node, but not the tools it drives. You still need git and Claude Code (`claude`) on your PATH, plus your tracker's sign-in: `az login` for Azure DevOps, or `gh auth login` (or a `GH_TOKEN`) for GitHub. **Setup** in the app checks each one.
+
+### Cut a release
+
+1. Bump `version` in `package.json` and commit it.
+2. Tag that commit with the same version, and push the tag:
+
+   ```bash
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+
+The `Release` workflow builds on Windows and attaches both `.exe` files to a GitHub Release for that version. `npm run dist` makes the same files locally in `release/` without publishing.
+
+## Run from source
 
 ```bash
 npm install

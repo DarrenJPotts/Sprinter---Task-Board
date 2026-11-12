@@ -1,6 +1,6 @@
-// Writes electron/tray.png: a yellow tile with a thick black border and a hard
-// shadow, the board's neubrutalist look at tray size. Run once: node electron/make-icon.cjs
-const { writeFileSync } = require('node:fs')
+// Writes electron/tray.png and build-resources/icon.png (the installer and taskbar icon, 256 px): a yellow
+// tile with a thick black border and a hard shadow, the board's neubrutalist look. Run: node electron/make-icon.cjs
+const { mkdirSync, writeFileSync } = require('node:fs')
 const path = require('node:path')
 const zlib = require('node:zlib')
 
@@ -47,20 +47,30 @@ const chunk = (type, data) => {
   return Buffer.concat([len, body, crc])
 }
 
-const header = Buffer.alloc(13)
-header.writeUInt32BE(SIZE, 0)
-header.writeUInt32BE(SIZE, 4)
-header[8] = 8 // bit depth
-header[9] = 6 // RGBA
-const rows = Buffer.concat(
-  Array.from({ length: SIZE }, (_, y) => Buffer.concat([Buffer.from([0]), pixels.subarray(y * SIZE * 4, (y + 1) * SIZE * 4)])),
-)
+// The 32 px design scaled up whole pixels at a time, so the big icon keeps the hard edges.
+function png(scale) {
+  const size = SIZE * scale
+  const header = Buffer.alloc(13)
+  header.writeUInt32BE(size, 0)
+  header.writeUInt32BE(size, 4)
+  header[8] = 8 // bit depth
+  header[9] = 6 // RGBA
+  const rows = Buffer.concat(
+    Array.from({ length: size }, (_, y) => {
+      const row = Buffer.alloc(1 + size * 4)
+      for (let x = 0; x < size; x++) pixels.copy(row, 1 + x * 4, (Math.floor(y / scale) * SIZE + Math.floor(x / scale)) * 4, (Math.floor(y / scale) * SIZE + Math.floor(x / scale)) * 4 + 4)
+      return row
+    }),
+  )
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', header),
+    chunk('IDAT', zlib.deflateSync(rows)),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+}
 
-const png = Buffer.concat([
-  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-  chunk('IHDR', header),
-  chunk('IDAT', zlib.deflateSync(rows)),
-  chunk('IEND', Buffer.alloc(0)),
-])
-writeFileSync(path.join(__dirname, 'tray.png'), png)
-console.log('wrote electron/tray.png')
+writeFileSync(path.join(__dirname, 'tray.png'), png(1))
+mkdirSync(path.join(__dirname, '..', 'build-resources'), { recursive: true })
+writeFileSync(path.join(__dirname, '..', 'build-resources', 'icon.png'), png(8))
+console.log('wrote electron/tray.png and build-resources/icon.png')

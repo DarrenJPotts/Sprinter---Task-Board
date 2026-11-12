@@ -419,8 +419,10 @@ server.on('upgrade', (req, socket, head) => {
   sockets.handleUpgrade(req, socket, head, ws => attach(project, match[2]!, ws))
 })
 
-server.listen(appConfig.port, '127.0.0.1', () => {
-  console.log(`hq on http://localhost:${appConfig.port}`)
+// SPRINTER_PORT runs a second copy beside the usual one, e.g. to try a packaged build.
+const port = Number(process.env.SPRINTER_PORT) || appConfig.port
+server.listen(port, '127.0.0.1', () => {
+  console.log(`hq on http://localhost:${port}`)
   const active = getProject(null)
   if (active) void refresh(active)
   // Every project anyone has opened since start keeps its board fresh.
