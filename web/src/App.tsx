@@ -209,6 +209,12 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
     setFocusedPane(opened.paneId)
   }
   const closeTab = (key: string) => setLayout(closeIn(layoutRef.current, key))
+  // A blank Claude chat at the repo root in its own tab; its conversation is kept and resumes like any other.
+  const newChat = (into?: string) => {
+    const key = `chat-${Date.now().toString(36)}`
+    void run(api.openTerminal(key, {}))
+    openTab(key, into)
+  }
   const isShown = (key: string) => panes(layout).some(p => p.active === key)
   const resumable = new Set(snap?.resumable ?? [])
   // Reopens a terminal as it was: the same Claude conversation with no new prompt, or a plain shell.
@@ -269,7 +275,9 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
   const isOver = needs > avail
 
   const tabLabel = (key: string) =>
-    pinOf(key) ? `${pinOf(key)!.icon} ${pinOf(key)!.label}` : key.endsWith('-shell') ? `${key.replace(/-shell$/, '')} · shell` : key
+    isChatKey(key)
+      ? chatLabel(key)
+      : pinOf(key) ? `${pinOf(key)!.icon} ${pinOf(key)!.label}` : key.endsWith('-shell') ? `${key.replace(/-shell$/, '')} · shell` : key
 
   const dropOnPane = (event: React.DragEvent<HTMLDivElement>, pane: PaneNode) => {
     const key = event.dataTransfer.getData('text/hq-tab')
@@ -337,6 +345,9 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
               ))}
             </div>
           ))}
+          <button className="tool pane-new" onClick={() => newChat(pane.id)} title="A new blank Claude chat in this pane">
+            ＋ Chat
+          </button>
           <button
             className="tool pane-zoom"
             title={zoomed === pane.id ? 'Back to the board' : 'Full screen: this pane fills the window'}
@@ -502,33 +513,7 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
           <button className={`view${view === 'plan' ? ' on' : ''}`} onClick={() => setView('plan')}>
             ☰ Plan
           </button>
-          {pins.length > 0 && <span className="divider" />}
-          {pins.map(pin => {
-            const terminal = terminalOf.get(pin.key)
-            return (
-              <button
-                key={pin.key}
-                className={`tool pin${terminal?.needsYou ? ' alert' : ''}`}
-                title={`${pin.mode === 'fresh' ? 'Fresh run' : 'Keep chat'}: ${pin.prompt || 'no prompt'}`}
-                onClick={async () => {
-                  // A kept chat that is already open is just shown; a fresh run restarts, so ask first.
-                  if (pin.mode === 'fresh' && terminal?.isAlive && !confirm(`Restart ${pin.label} with a fresh run?`)) {
-                    openTab(pin.key)
-                    return
-                  }
-                  if (pin.mode === 'fresh' || !terminal?.isAlive) await run(api.openPin(pin.key))
-                  openTab(pin.key)
-                }}
-              >
-                {terminal?.isAlive && <span className={`dot ${terminal.state}`} />}
-                {pin.icon} {pin.label}
-              </button>
-            )
-          })}
-          <div className="spacer" />
-          <span className="count">
-            {snap?.isRefreshing ? 'Refreshing…' : `Updated ${new Date(board.fetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}
-          </span>
+          <span className="divider" />
           <span className="tool static" title={`All ticket sessions: ${compact(total)} tokens in total. Cache reads not counted.`}>
             🪙 Today {compact(today)}
           </span>
@@ -569,6 +554,34 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
           <button className="tool" onClick={() => void run(api.refresh())}>
             ⟳ Refresh
           </button>
+          {tabs.length === 0 && (
+            <button className="tool" onClick={() => newChat()} title="A blank Claude chat at the repo root">
+              💬 New chat
+            </button>
+          )}
+          {pins.length > 0 && <span className="divider" />}
+          {pins.map(pin => {
+            const terminal = terminalOf.get(pin.key)
+            return (
+              <button
+                key={pin.key}
+                className={`tool pin${terminal?.needsYou ? ' alert' : ''}`}
+                title={`${pin.mode === 'fresh' ? 'Fresh run' : 'Keep chat'}: ${pin.prompt || 'no prompt'}`}
+                onClick={async () => {
+                  // A kept chat that is already open is just shown; a fresh run restarts, so ask first.
+                  if (pin.mode === 'fresh' && terminal?.isAlive && !confirm(`Restart ${pin.label} with a fresh run?`)) {
+                    openTab(pin.key)
+                    return
+                  }
+                  if (pin.mode === 'fresh' || !terminal?.isAlive) await run(api.openPin(pin.key))
+                  openTab(pin.key)
+                }}
+              >
+                {terminal?.isAlive && <span className={`dot ${terminal.state}`} />}
+                {pin.icon} {pin.label}
+              </button>
+            )
+          })}
           <PopHost
             isOpen={isAddPinOpen}
             button={
@@ -579,6 +592,10 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
           >
             <AddPin onSaved={() => void run(api.snapshot())} onClose={() => setIsAddPinOpen(false)} />
           </PopHost>
+          <div className="spacer" />
+          <span className="count">
+            {snap?.isRefreshing ? 'Refreshing…' : `Updated ${new Date(board.fetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}
+          </span>
         </div>
 
         <div className="board">
@@ -742,6 +759,7 @@ function tabGroups(tabs: string[], stories: Map<string, Story>, pins: Pin[], rul
   }
   const isPin = (key: string) => pins.some(p => p.key === key)
   for (const key of tabs.filter(isPin)) add('Pinned', 'yellow', key)
+  for (const key of tabs.filter(isChatKey)) add('Chats', 'purple', key)
   for (const stage of rules.stageGroups) {
     for (const key of tabs) {
       const story = stories.get(key.replace(/-shell$/, ''))
@@ -750,7 +768,7 @@ function tabGroups(tabs: string[], stories: Map<string, Story>, pins: Pin[], rul
   }
   // Tickets that left the board since their tab opened.
   for (const key of tabs) {
-    if (!isPin(key) && !stories.has(key.replace(/-shell$/, ''))) add('Other', 'gray', key)
+    if (!isPin(key) && !isChatKey(key) && !stories.has(key.replace(/-shell$/, ''))) add('Other', 'gray', key)
   }
 
   return groups
@@ -895,4 +913,12 @@ export function App() {
   }
 
   return <ProjectApp key={project} project={project} onSwitch={choose} onNew={() => setIsNewOpen(true)} />
+}
+
+const isChatKey = (key: string) => key.startsWith('chat-')
+
+/** "💬 Chat 14:32": a blank chat is named by when it was started, which its key holds. */
+function chatLabel(key: string) {
+  const started = new Date(parseInt(key.slice(5), 36))
+  return `💬 Chat ${Number.isNaN(started.getTime()) ? '' : started.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
 }

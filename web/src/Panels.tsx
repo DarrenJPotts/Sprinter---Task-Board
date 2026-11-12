@@ -15,7 +15,7 @@ export function inboxItems(terminals: TerminalInfo[], stories: Map<string, Story
     const story = stories.get(ticketOf(t.key))
     items.push({
       key: t.key,
-      title: pinTitle(pins, t.key) ?? (story ? `${story.id} · ${story.title}` : t.key),
+      title: pinTitle(pins, t.key) ?? (story ? `${story.id} · ${story.title}` : t.key.startsWith('chat-') ? '💬 Chat' : t.key),
       reason: t.state === 'asking' ? 'Claude is asking you something' : 'Claude finished its turn',
       tone: t.state === 'asking' ? 'pink' : 'yellow',
     })
