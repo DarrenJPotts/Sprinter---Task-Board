@@ -392,10 +392,16 @@ app.use((caught: unknown, req: express.Request, res: express.Response, _next: ex
 
 // Built UI for the app and `npm start`; `npm run dev` serves it through Vite instead.
 const dist = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist')
-if (existsSync(dist)) {
-  app.use(express.static(dist))
-  app.get(/^\/(?!api|ws).*/, (_req, res) => res.sendFile(join(dist, 'index.html')))
-}
+app.use(express.static(dist))
+app.get(/^\/(?!api|ws).*/, (_req, res) => {
+  const page = join(dist, 'index.html')
+  if (existsSync(page)) {
+    res.sendFile(page)
+    return
+  }
+  // Mid-rebuild the page is briefly gone: a window that reloads now waits and tries again, not a 404.
+  res.type('html').send('<!doctype html><meta http-equiv="refresh" content="2"><title>Sprinter</title><p style="font-family:sans-serif">Sprinter is rebuilding…</p>')
+})
 
 const server = createServer(app)
 const sockets = new WebSocketServer({ noServer: true })

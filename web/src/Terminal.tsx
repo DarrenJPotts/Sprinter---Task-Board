@@ -1,18 +1,39 @@
 import { FitAddon } from '@xterm/addon-fit'
-import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal as Xterm } from '@xterm/xterm'
 import { useEffect, useRef } from 'react'
 
 import { projectId } from './api'
 
-// Always dark, in either theme: a terminal reads best light-on-dark. The cursor and selection take the board's yellow.
+// Always dark, in either theme: a terminal reads best light-on-dark. The cursor and selection take the
+// board's yellow. Grey ("bright black") is what Claude Code uses for most secondary text, so it is set
+// well clear of the background instead of the near-black default.
 const themeFor = (_isDark: boolean) => ({
   background: '#1b1b1f',
-  foreground: '#f4f4f0',
+  foreground: '#ececec',
   cursor: '#ffdc58',
   cursorAccent: '#000000',
-  selectionBackground: '#ffdc5855',
+  selectionBackground: '#ffdc5866',
+  black: '#2e2e33',
+  red: '#ff7b72',
+  green: '#7ee787',
+  yellow: '#f2cc60',
+  blue: '#79c0ff',
+  magenta: '#d2a8ff',
+  cyan: '#76e3ea',
+  white: '#d8d8d8',
+  brightBlack: '#a0a0a8',
+  brightRed: '#ffa198',
+  brightGreen: '#a5f0ae',
+  brightYellow: '#ffdf8a',
+  brightBlue: '#a5d6ff',
+  brightMagenta: '#e2c5ff',
+  brightCyan: '#b3f0f5',
+  brightWhite: '#ffffff',
 })
+
+// Fonts installed with Windows (and their usual stand-ins elsewhere). A web font here loads after the
+// terminal has measured its cells, which spaces the letters out ("Cl aude"), so none is used.
+const FONT = "'Cascadia Mono', 'Cascadia Code', Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace"
 
 /** One ticket's live terminal, attached over a socket; switching `termKey` re-attaches. */
 export function Terminal({ termKey, isDark, onExit }: { termKey: string; isDark: boolean; onExit: () => void }) {
@@ -26,26 +47,29 @@ export function Terminal({ termKey, isDark, onExit }: { termKey: string; isDark:
   useEffect(() => {
     if (!host.current) return
     const term = new Xterm({
-      fontFamily: "'Space Mono', 'Cascadia Mono', Consolas, monospace",
-      fontSize: 13,
-      lineHeight: 1.2,
+      fontFamily: FONT,
+      fontSize: 14,
+      lineHeight: 1.25,
+      letterSpacing: 0,
       cursorBlink: true,
       scrollback: 5000,
+      // Text the program dims anyway is lifted to readable contrast against the background.
+      minimumContrastRatio: 4.5,
       theme: themeFor(darkRef.current),
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
     termRef.current = term
     term.open(host.current)
-    // Draw on the GPU: Claude Code repaints its whole screen often, which the default DOM renderer lags on.
-    try {
-      const gpu = new WebglAddon()
-      gpu.onContextLoss(() => gpu.dispose())
-      term.loadAddon(gpu)
-    } catch {
-      // No WebGL here: the DOM renderer carries on.
-    }
+    // The standard renderer, not the GPU one: the GPU renderer drew nothing in some windows and spaced
+    // letters out when its font measure ran early; the lag it was added for came from the server.
     fit.fit()
+    // If a font finishes loading after the first measure, measure the cells again.
+    void document.fonts.ready.then(() => {
+      if (termRef.current !== term) return
+      term.options.fontFamily = FONT
+      fit.fit()
+    })
 
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
     const socket = new WebSocket(`${scheme}://${location.host}/ws/terminals/${encodeURIComponent(projectId())}/${encodeURIComponent(termKey)}`)

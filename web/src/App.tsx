@@ -107,7 +107,8 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
     try {
       const next = await work
       // A window left open across a rebuild would keep running the old page: reload it.
-      if (loadedBuild.current && next.buildId !== loadedBuild.current) {
+      // 'dev' means the built page is missing right now (a rebuild is under way): wait for the new one.
+      if (loadedBuild.current && next.buildId !== loadedBuild.current && next.buildId !== 'dev') {
         location.reload()
         return
       }
