@@ -536,11 +536,9 @@ html, body { overflow: hidden; }
 .pane > .term, .pane > .term-empty, .chat-wrap { min-height: 140px; }
 .chat-scroll { min-height: 60px; }
 
-/* Button bar sections fold their labels into their icons when the bar runs out of room (or on Compact).
+/* Compact folds the button bar's labels into their icons; without it the bar wraps onto rows as it needs.
    Badges, the Needs-you alert and pins' running dots stay. A folded label slides back out on hover or focus. */
-/* The gap stays the same folded or not, so a section's width changes only by its labels and the fitting
-   cannot flip back and forth at the edge of the room. */
-.bar-group { display: flex; flex-wrap: nowrap; align-items: center; gap: 10px; }
+.bar-group { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .views .label {
   display: inline-block; max-width: 14em; padding-left: 5px; overflow: hidden; white-space: nowrap; vertical-align: bottom;
   transition: max-width 200ms ease, padding-left 200ms ease, opacity 160ms ease;
@@ -549,7 +547,7 @@ html, body { overflow: hidden; }
 .bar-group.collapsed .label { max-width: 0; padding-left: 0; opacity: 0; }
 .bar-group.collapsed .tool:hover .label, .bar-group.collapsed .tool:focus-visible .label,
 .bar-group.collapsed .view:hover .label, .bar-group.collapsed .view:focus-visible .label { max-width: 14em; padding-left: 5px; opacity: 1; }
-.bar-mode { padding: 4px 10px; font-size: 13px; white-space: nowrap; }
+.bar-mode { width: 30px; height: 30px; padding: 0; display: inline-grid; place-items: center; font-size: 15px; }
 .bar-mode.on { background: var(--c-yellow); color: #000; }
 .views > .count { white-space: nowrap; }
 @media (prefers-reduced-motion: reduce) { .views .label { transition: none; } }

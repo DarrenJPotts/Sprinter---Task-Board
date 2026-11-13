@@ -95,25 +95,9 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
   const [outputTask, setOutputTask] = useState<BgTask | null>(null)
   // Chats shown as a conversation instead of their terminal; remembered per chat.
   const [chatViews, setChatViews] = useLocal<string[]>('hq.chatViews', [])
-  // The button bar fits itself to its space: sections shrink to their icons, tools first, only when it runs
-  // out of room. Compact keeps them all shrunk.
-  const [barMode, setBarMode] = useLocal<'auto' | 'compact'>('hq.barMode', 'auto')
-  const [fitted, setFitted] = useState<string[]>([])
-  const barRef = useRef<HTMLDivElement>(null)
-  const barCollapsed = barMode === 'compact' ? FIT_ORDER[FIT_ORDER.length - 1]! : fitted
-  useLayoutEffect(() => {
-    const bar = barRef.current
-    if (!bar || barMode === 'compact') return
-    const fit = () => {
-      const next = fitBar(bar)
-      setFitted(prev => (prev.join() === next.join() ? prev : next))
-    }
-    fit()
-    const watch = new ResizeObserver(fit)
-    watch.observe(bar)
-    for (const group of bar.querySelectorAll(':scope > .bar-group')) watch.observe(group)
-    return () => watch.disconnect()
-  }, [barMode, snap?.pins.length])
+  // Compact folds every button bar section to its icons; otherwise labels show and the bar wraps onto rows.
+  const [isBarCompact, setIsBarCompact] = useLocal('hq.barCompact', false)
+  const barCollapsed = isBarCompact ? ['views', 'tools', 'pins'] : []
   // The tab being renamed in place, and what has been typed so far.
   const [renaming, setRenaming] = useState<{ key: string; draft: string } | null>(null)
   const setupProblems = useSetupProblems()
@@ -631,7 +615,7 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
           </div>
         </div>
 
-        <div className="views" ref={barRef}>
+        <div className="views">
           <div data-group="views" className={`bar-group${barCollapsed.includes('views') ? ' collapsed' : ''}`}>
           <button className={`view${view === 'board' ? ' on' : ''}`} onClick={() => setView('board')} title="Board: cards by column">
             ▦<span className="label">Board</span>
@@ -774,15 +758,13 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
           </div>
           <div className="spacer" />
           <button
-            className={`tool bar-mode${barMode === 'compact' ? ' on' : ''}`}
-            onClick={() => setBarMode(barMode === 'compact' ? 'auto' : 'compact')}
-            title={
-              barMode === 'compact'
-                ? 'Always compact. Press to fit the bar to its space again: labels show wherever there is room.'
-                : 'Fitting to the space: sections shrink to icons only when the bar runs out of room. Press to keep it compact.'
-            }
+            className={`tool bar-mode${isBarCompact ? ' on' : ''}`}
+            onClick={() => setIsBarCompact(!isBarCompact)}
+            title={isBarCompact ? 'Show the labels' : 'Compact: icons only'}
+            aria-label={isBarCompact ? 'Show the labels' : 'Compact: icons only'}
+            aria-pressed={isBarCompact}
           >
-            {barMode === 'compact' ? '⇥ Fit' : '⇤ Compact'}
+            {isBarCompact ? '⇥' : '⇤'}
           </button>
           <span className="count">
             {snap?.isRefreshing ? 'Refreshing…' : `Updated ${new Date(board.fetchedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}
@@ -1014,41 +996,6 @@ function tabGroups(tabs: string[], stories: Map<string, Story>, pins: Pin[], rul
   }
 
   return groups
-}
-
-// Which sections shrink as room runs out: tools first, then pins, then Board and Plan.
-const FIT_ORDER: string[][] = [[], ['tools'], ['tools', 'pins'], ['tools', 'pins', 'views']]
-// Matches .label's padding-left: the gap between an icon and its label.
-const LABEL_GAP = 5
-
-/**
- * The fewest sections to shrink so the bar fits on one line. Each section's two widths are worked out from
- * what is on screen now, whatever state (or mid-animation) it is in: its width without labels, plus the
- * labels at their full width. So a section never has to be opened out just to be measured.
- */
-function fitBar(bar: HTMLElement): string[] {
-  const widths = new Map<string, { full: number; small: number }>()
-  let others = 0
-  for (const child of bar.children) {
-    const el = child as HTMLElement
-    if (el.classList.contains('bar-group')) {
-      const labels = [...el.querySelectorAll<HTMLElement>('.label')]
-      const shown = labels.reduce((sum, label) => sum + label.offsetWidth, 0)
-      const natural = labels.reduce((sum, label) => sum + label.scrollWidth - parseFloat(getComputedStyle(label).paddingLeft) + LABEL_GAP, 0)
-      const small = el.offsetWidth - shown
-      widths.set(el.dataset.group ?? '', { full: small + natural, small })
-    } else if (!el.classList.contains('spacer')) {
-      others += el.offsetWidth + parseFloat(getComputedStyle(el).marginLeft) + parseFloat(getComputedStyle(el).marginRight)
-    }
-  }
-  const style = getComputedStyle(bar)
-  const gaps = (parseFloat(style.columnGap) || 0) * (bar.children.length - 1)
-  const room = bar.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - others - gaps - 2
-  for (const shrunk of FIT_ORDER) {
-    const need = [...widths].reduce((sum, [name, w]) => sum + (shrunk.includes(name) ? w.small : w.full), 0)
-    if (need <= room) return shrunk
-  }
-  return FIT_ORDER[FIT_ORDER.length - 1]!
 }
 
 /** A toolbar button and its popover, which opens toward whichever side of the button has more room. */
