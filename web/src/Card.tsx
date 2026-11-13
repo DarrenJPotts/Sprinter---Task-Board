@@ -34,7 +34,18 @@ export function Card({ rules, story, hint, isSelected, isStarred, terminal, usag
   return (
     <div
       className={`card${isSelected ? ' on' : ''}`}
+      role="button"
+      tabIndex={0}
+      aria-pressed={isSelected}
+      aria-label={`${itemRef(story)} ${story.title}`}
       onClick={onOpen}
+      onKeyDown={event => {
+        if (event.target !== event.currentTarget) return
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onOpen()
+        }
+      }}
       draggable={draggable}
       onDragStart={event => event.dataTransfer.setData('text/plain', String(story.id))}
     >

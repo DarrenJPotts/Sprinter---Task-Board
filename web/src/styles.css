@@ -551,3 +551,37 @@ html, body { overflow: hidden; }
 .bar-mode.on { background: var(--c-yellow); color: #000; }
 .views > .count { white-space: nowrap; }
 @media (prefers-reduced-motion: reduce) { .views .label { transition: none; } }
+
+/* A pane's head: its tabs on one row that scrolls sideways, and the pane's own controls as icons at the end. */
+.pane-head { display: flex; align-items: flex-start; gap: 8px; padding: 4px 4px 10px; flex-shrink: 0; min-width: 0; }
+.pane-head .tabs { flex: 1; min-width: 0; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; padding: 0 0 6px; scrollbar-width: thin; }
+.pane-head .tab-group { flex-wrap: nowrap; flex-shrink: 0; }
+.pane-head .tab { flex-shrink: 0; }
+.pane-tools { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.pane-icon { width: 30px; height: 30px; padding: 0; display: inline-grid; place-items: center; font-size: 15px; }
+.pane-icon.on { background: var(--c-yellow); color: #000; }
+.pane > .pane-head { flex-shrink: 0; }
+
+/* The ticket header's ⋯ menu, and the drift banner with its own Sync button. */
+.ticket-box { flex-shrink: 0; min-width: 0; }
+.ticket-menu { position: relative; flex: 0 0 auto; }
+.ticket-menu .menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 25; min-width: 190px; padding: 6px; display: flex; flex-direction: column;
+  background: var(--surface); border: var(--b-thick) solid var(--edge); border-radius: var(--radius); box-shadow: var(--lift) var(--lift) 0 var(--shadow);
+}
+.ticket-menu .menu button {
+  text-align: left; padding: 7px 10px; font: inherit; font-weight: 700; color: var(--ink); background: none; border: 0; border-radius: 4px; cursor: pointer; white-space: nowrap;
+}
+.ticket-menu .menu button:hover, .ticket-menu .menu button:focus-visible { background: var(--c-yellow); color: #000; outline: none; }
+.ticket .drift { display: flex; align-items: center; gap: 10px; }
+.ticket .drift span { flex: 1; min-width: 0; }
+.ticket .drift .tool { padding: 2px 9px; background: #fff; color: #000; border-color: #000; box-shadow: 2px 2px 0 #000; }
+
+/* Cards and tabs take keyboard focus: show where it is. */
+.card:focus-visible, .tab:focus-visible { outline: 3px solid var(--c-pink); outline-offset: 3px; }
+/* Two rows, always: the tabs on top, the pane's controls under them (Terminal/Chat left, the icons right). */
+.pane-head { flex-direction: column; align-items: stretch; row-gap: 6px; }
+.pane-head .tabs { flex: none; width: 100%; }
+.pane-tools { width: 100%; }
+.pane-tools .view-switch { margin-left: 0; margin-right: auto; }
+.pane-tools > .pane-icon:first-of-type { margin-left: auto; }

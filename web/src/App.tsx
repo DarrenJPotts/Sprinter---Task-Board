@@ -85,13 +85,19 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
   const tabs = allTabs(layout)
   const focused = panes(layout).find(p => p.id === focusedPane) ?? panes(layout)[0]
   const [dropOn, setDropOn] = useState<string>()
-  const [isInboxOpen, setIsInboxOpen] = useState(false)
+  // One toolbar popover open at a time: opening one closes the last.
+  const [openPop, setOpenPop] = useState<string | null>(null)
+  const popover = (name: string): [boolean, (open: boolean) => void] => [
+    openPop === name,
+    open => setOpenPop(last => (open ? name : last === name ? null : last)),
+  ]
+  const [isInboxOpen, setIsInboxOpen] = popover('inbox')
   const [isSetupOpen, setIsSetupOpen] = useState(false)
-  const [isAddPinOpen, setIsAddPinOpen] = useState(false)
-  const [isReviewsOpen, setIsReviewsOpen] = useState(false)
+  const [isAddPinOpen, setIsAddPinOpen] = popover('pin')
+  const [isReviewsOpen, setIsReviewsOpen] = popover('reviews')
   const [isTourOpen, setIsTourOpen] = useState(false)
-  const [isTasksOpen, setIsTasksOpen] = useState(false)
-  const [isSessionsOpen, setIsSessionsOpen] = useState(false)
+  const [isTasksOpen, setIsTasksOpen] = popover('tasks')
+  const [isSessionsOpen, setIsSessionsOpen] = popover('sessions')
   const [outputTask, setOutputTask] = useState<BgTask | null>(null)
   // Chats shown as a conversation instead of their terminal; remembered per chat.
   const [chatViews, setChatViews] = useLocal<string[]>('hq.chatViews', [])
@@ -351,7 +357,8 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
         }}
         onDrop={event => dropOnPane(event, pane)}
       >
-        <div className="tabs">
+        <div className="pane-head">
+        <div className="tabs" role="tablist">
           {tabGroups(pane.tabs, byId, pins, rules).map(group => (
             <div key={group.name} className="tab-group">
               <span className={`tag ${group.color}`}>{group.name}</span>
@@ -359,6 +366,18 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
                 <div
                   key={key}
                   className={`tab${current === key ? ' on' : ''}`}
+                  role="tab"
+                  tabIndex={0}
+                  aria-selected={current === key}
+                  onKeyDown={event => {
+                    if (event.target !== event.currentTarget) return
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      setLayout(activate(layoutRef.current, pane.id, key))
+                      setFocusedPane(pane.id)
+                    }
+                    if (event.key === 'Delete') closeTab(key)
+                  }}
                   draggable
                   title="Drag onto a pane's edge to split it, or its middle to move the tab there"
                   onDragStart={event => {
@@ -407,6 +426,8 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
               ))}
             </div>
           ))}
+        </div>
+        <div className="pane-tools">
           {hasChat && (
             <div className="view-switch" role="group" aria-label="Show this chat as">
               <button className={isChatView ? '' : 'on'} onClick={() => setChatViews(chatViews.filter(k => k !== current))} title="The live terminal: type and approve here">
@@ -417,25 +438,27 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
               </button>
             </div>
           )}
-          <button className="tool pane-new" onClick={() => newChat(pane.id)} title="A new blank Claude chat in this pane">
-            ＋ Chat
+          <button className="tool pane-icon" onClick={() => newChat(pane.id)} title="A new blank Claude chat in this pane" aria-label="New chat in this pane">
+            ＋
           </button>
           {zoomed === pane.id ? (
-            <button className="tool pane-zoom" title="Show every open terminal again, still full screen" onClick={() => setZoomed('all')}>
-              ⧉ All terminals
+            <button className="tool pane-icon" title="Show every open terminal again, still full screen" aria-label="All terminals" onClick={() => setZoomed('all')}>
+              ⧉
             </button>
           ) : (
-            <button className="tool pane-zoom" title="Maximize: this chat alone fills the window" onClick={() => setZoomed(pane.id)}>
+            <button className="tool pane-icon" title="Maximize: this chat alone fills the window" aria-label="Maximize this chat" onClick={() => setZoomed(pane.id)}>
               ▣
             </button>
           )}
           <button
-            className={`tool pane-zoom${isFullScreen ? ' on' : ''}`}
+            className={`tool pane-icon${isFullScreen ? ' on' : ''}`}
             title={isFullScreen ? 'Back to the board' : 'Full screen: every open terminal fills the window'}
+            aria-label={isFullScreen ? 'Exit full screen' : 'Full screen'}
             onClick={() => setZoomed(isFullScreen ? null : 'all')}
           >
-            {isFullScreen ? '⤡ Exit' : '⤢'}
+            {isFullScreen ? '⤡' : '⤢'}
           </button>
+        </div>
         </div>
         {story && (
           <TicketHead
@@ -628,6 +651,7 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
           <div data-group="tools" className={`bar-group${barCollapsed.includes('tools') ? ' collapsed' : ''}`}>
           <PopHost
             isOpen={isReviewsOpen}
+            onClose={() => setIsReviewsOpen(false)}
             button={
               <button className="tool" onClick={() => setIsReviewsOpen(!isReviewsOpen)} title="Other people's PRs waiting on a review">
                 🔎<span className="label">Reviews</span> {reviewsWaiting > 0 && <span className="badge">{reviewsWaiting}</span>}
@@ -652,6 +676,7 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
           </PopHost>
           <PopHost
             isOpen={isInboxOpen}
+            onClose={() => setIsInboxOpen(false)}
             button={
               <button className={`tool${inbox.length > 0 ? ' alert' : ''}`} onClick={() => setIsInboxOpen(!isInboxOpen)} title="Chats waiting on you">
                 🔔<span className="label">Needs you</span> {inbox.length > 0 && <span className="badge">{inbox.length}</span>}
@@ -665,6 +690,7 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
           </button>
           <PopHost
             isOpen={isTasksOpen}
+            onClose={() => setIsTasksOpen(false)}
             button={
               <button className="tool" onClick={() => setIsTasksOpen(!isTasksOpen)} title="Background shell commands and agents your chats started">
                 🧵<span className="label">Tasks</span> {runningTasks > 0 && <span className="badge">{runningTasks}</span>}
@@ -684,6 +710,7 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
           </PopHost>
           <PopHost
             isOpen={isSessionsOpen}
+            onClose={() => setIsSessionsOpen(false)}
             button={
               <button className="tool" onClick={() => setIsSessionsOpen(!isSessionsOpen)} title="Every saved Claude session in this project">
                 📚<span className="label">Sessions</span>
@@ -747,6 +774,7 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
           })}
           <PopHost
             isOpen={isAddPinOpen}
+            onClose={() => setIsAddPinOpen(false)}
             button={
               <button className="tool" onClick={() => setIsAddPinOpen(!isAddPinOpen)} title="Add a pinned chat">
                 ＋<span className="label">Pin</span>
@@ -874,101 +902,194 @@ function TicketHead(props: {
   const lines = rules.drift(story)
   const threads = reviewThreads(story)
   const [isCompact, setIsCompact] = useLocal('hq.ticketCompact', false)
+  // A narrow pane gets the one-line header by itself, so the terminal keeps its room; ▾ opens it anyway.
+  const box = useRef<HTMLDivElement>(null)
+  const isNarrow = useNarrow(box, NARROW_PANE)
+  const [isOpened, setIsOpened] = useState(false)
+  const showCompact = isCompact || (isNarrow && !isOpened)
+  const sync = props.syncCommand && rules.hasTaskDrift(story) && !isLive ? props.syncCommand.replaceAll('{id}', String(story.id)) : ''
 
-  // One line, so the terminal gets the room: the ticket, its column, anything wrong, and the main action.
-  if (isCompact) {
-    return (
-      <div className="ticket compact">
-        <a href={story.url} target="_blank" rel="noreferrer">
-          {itemRef(story)} ↗
-        </a>
-        <Tag color={rules.colorOf(story.column)}>{story.column}</Tag>
-        <span className="ticket-title" title={story.title}>
-          {story.title}
-        </span>
-        {threads > 0 && <Tag color="red">💬 {threads}</Tag>}
-        {lines.length > 0 && (
-          <span className="drift-flag" title={lines.join(' · ')}>
-            ⚠
-          </span>
-        )}
-        {isLive ? (
-          <button className="tool" onClick={props.onStop}>
-            ■ Stop
-          </button>
-        ) : (
-          <button className="tool primary" onClick={() => props.onStart(command)} title={`Start Claude: ${command}`}>
-            ▶ <code>{command}</code>
-          </button>
-        )}
-        <button className="tool" onClick={() => setIsCompact(false)} title="Show the whole ticket">
-          ▾
-        </button>
-      </div>
-    )
-  }
+  const main = isLive ? (
+    <button className="tool" onClick={props.onStop}>
+      ■ Stop{showCompact ? '' : ' terminal'}
+    </button>
+  ) : (
+    <button className="tool primary" onClick={() => props.onStart(command)} title={`Start Claude: ${command}`}>
+      ▶ {showCompact ? '' : 'Claude: '}
+      <code>{command}</code>
+    </button>
+  )
+  const more = (
+    <TicketMenu
+      items={[
+        !isLive && props.canResume && { label: '⟳ Resume chat', title: 'Reopen the conversation without sending anything', onClick: props.onResume },
+        { label: '⌨ Shell', title: "A plain terminal in this ticket's worktree", onClick: props.onShell },
+        sync && { label: '⟲ Sync stage tasks', title: sync, onClick: () => props.onStart(sync) },
+        props.hasWorktree && { label: '🧹 Remove worktree', title: 'Its terminals stop', onClick: props.onRemove },
+      ]}
+    />
+  )
 
   return (
-    <div className="ticket">
-      <button className="tool ticket-collapse" onClick={() => setIsCompact(true)} title="Shrink the ticket to one line">
-        ▴
-      </button>
-      <h2>{story.title}</h2>
-      <div className="meta">
-        <a href={story.url} target="_blank" rel="noreferrer">
-          {itemRef(story)} ↗
-        </a>
-        <Tag color={rules.colorOf(story.column)}>{story.column}</Tag>
-        {story.tier && <Tag color="gray">{story.tier}</Tag>}
-        {threads > 0 && <Tag color="red">💬 {threads} review thread{threads === 1 ? '' : 's'}</Tag>}
-      </div>
-      {why && <p className="why">{why}</p>}
-      {props.usage && (
-        <p className="usage" title={usageTitle(props.usage)}>
-          🪙 {compact(billed(props.usage))} tokens · {compact(props.usage.cacheRead)} cache reads · {props.usage.turns} requests
-          {props.usage.today > 0 && ` · ${compact(props.usage.today)} today`}
-        </p>
+    <div ref={box} className="ticket-box">
+      {showCompact ? (
+        // One line, so the terminal gets the room: the ticket, its column, anything wrong, and the main action.
+        <div className="ticket compact">
+          <a href={story.url} target="_blank" rel="noreferrer">
+            {itemRef(story)} ↗
+          </a>
+          <Tag color={rules.colorOf(story.column)}>{story.column}</Tag>
+          <span className="ticket-title" title={story.title}>
+            {story.title}
+          </span>
+          {threads > 0 && <Tag color="red">💬 {threads}</Tag>}
+          {lines.length > 0 && (
+            <span className="drift-flag" title={lines.join(' · ')}>
+              ⚠
+            </span>
+          )}
+          {main}
+          {more}
+          <button
+            className="tool"
+            aria-label="Show the whole ticket"
+            title="Show the whole ticket"
+            onClick={() => {
+              setIsCompact(false)
+              setIsOpened(true)
+            }}
+          >
+            ▾
+          </button>
+        </div>
+      ) : (
+        <div className="ticket">
+          <button
+            className="tool ticket-collapse"
+            aria-label="Shrink the ticket to one line"
+            title="Shrink the ticket to one line"
+            onClick={() => (isNarrow ? setIsOpened(false) : setIsCompact(true))}
+          >
+            ▴
+          </button>
+          <h2>{story.title}</h2>
+          <div className="meta">
+            <a href={story.url} target="_blank" rel="noreferrer">
+              {itemRef(story)} ↗
+            </a>
+            <Tag color={rules.colorOf(story.column)}>{story.column}</Tag>
+            {story.tier && <Tag color="gray">{story.tier}</Tag>}
+            {threads > 0 && <Tag color="red">💬 {threads} review thread{threads === 1 ? '' : 's'}</Tag>}
+          </div>
+          {why && <p className="why">{why}</p>}
+          {props.usage && (
+            <p className="usage" title={usageTitle(props.usage)}>
+              🪙 {compact(billed(props.usage))} tokens · {compact(props.usage.cacheRead)} cache reads · {props.usage.turns} requests
+              {props.usage.today > 0 && ` · ${compact(props.usage.today)} today`}
+            </p>
+          )}
+          <TimeLog
+            key={story.id}
+            time={props.time}
+            tasks={story.tasks}
+            canLog={props.canLogTime}
+            onLog={props.onLogTime}
+            onClear={props.onClearTime}
+          />
+          {lines.length > 0 && (
+            <div className="drift">
+              <span>⚠ {lines.join(' · ')}</span>
+              {sync && (
+                <button className="tool" onClick={() => props.onStart(sync)} title={sync}>
+                  ⟲ Sync
+                </button>
+              )}
+            </div>
+          )}
+          <div className="actions">
+            {main}
+            {more}
+          </div>
+        </div>
       )}
-      <TimeLog
-        key={story.id}
-        time={props.time}
-        tasks={story.tasks}
-        canLog={props.canLogTime}
-        onLog={props.onLogTime}
-        onClear={props.onClearTime}
-      />
-      {lines.length > 0 && <div className="drift">⚠ {lines.join(' · ')}</div>}
-      <div className="actions">
-        {isLive ? (
-          <button className="tool" onClick={props.onStop}>
-            ■ Stop terminal
-          </button>
-        ) : (
-          <>
-            {props.canResume && (
-              <button className="tool" onClick={props.onResume} title="Reopen the conversation without sending anything">
-                ⟳ Resume chat
-              </button>
-            )}
-            <button className="tool primary" onClick={() => props.onStart(command)}>
-              ▶ Claude: <code>{command}</code>
+    </div>
+  )
+}
+
+/** Below this width a ticket header starts as one line. */
+const NARROW_PANE = 460
+
+/** True while the element is narrower than `width`, kept up to date as it resizes. */
+function useNarrow(ref: React.RefObject<HTMLElement | null>, width: number) {
+  const [isNarrow, setIsNarrow] = useState(false)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const check = () => setIsNarrow(el.getBoundingClientRect().width < width)
+    check()
+    const watch = new ResizeObserver(check)
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [ref, width])
+  return isNarrow
+}
+
+/** Closes something on Esc or a press anywhere outside `ref`, while it is open. */
+function useDismiss(ref: React.RefObject<HTMLElement | null>, isOpen: boolean, onClose: () => void) {
+  const close = useRef(onClose)
+  close.current = onClose
+  useEffect(() => {
+    if (!isOpen) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close.current()
+    }
+    const onPress = (event: PointerEvent) => {
+      const target = event.target as Element | null
+      // A press inside it, or in a dialog it opened (a confirm), leaves it open.
+      if (target && (ref.current?.contains(target) || target.closest('.modal-back'))) return
+      close.current()
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('pointerdown', onPress)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('pointerdown', onPress)
+    }
+  }, [isOpen, ref])
+}
+
+type MenuItem = { label: string; title?: string; onClick: () => void }
+
+/** The ⋯ beside a ticket's main action: everything else it can do. */
+function TicketMenu({ items }: { items: (MenuItem | false | '' | undefined)[] }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const host = useRef<HTMLDivElement>(null)
+  useDismiss(host, isOpen, () => setIsOpen(false))
+  const shown = items.filter((item): item is MenuItem => Boolean(item))
+  if (shown.length === 0) return null
+
+  return (
+    <div className="ticket-menu" ref={host}>
+      <button className="tool" aria-label="More actions" aria-haspopup="menu" aria-expanded={isOpen} title="More actions" onClick={() => setIsOpen(!isOpen)}>
+        ⋯
+      </button>
+      {isOpen && (
+        <div className="menu" role="menu">
+          {shown.map(item => (
+            <button
+              key={item.label}
+              role="menuitem"
+              title={item.title}
+              onClick={() => {
+                setIsOpen(false)
+                item.onClick()
+              }}
+            >
+              {item.label}
             </button>
-          </>
-        )}
-        <button className="tool" onClick={props.onShell}>
-          ⌨ Shell
-        </button>
-        {props.syncCommand && rules.hasTaskDrift(story) && !isLive && (
-          <button className="tool" onClick={() => props.onStart(props.syncCommand.replaceAll('{id}', String(story.id)))}>
-            ⟲ Sync stage tasks
-          </button>
-        )}
-        {props.hasWorktree && (
-          <button className="tool" onClick={props.onRemove}>
-            🧹 Remove worktree
-          </button>
-        )}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -999,8 +1120,9 @@ function tabGroups(tabs: string[], stories: Map<string, Story>, pins: Pin[], rul
 }
 
 /** A toolbar button and its popover, which opens toward whichever side of the button has more room. */
-function PopHost({ isOpen, button, children }: { isOpen: boolean; button: React.ReactNode; children: React.ReactNode }) {
+function PopHost({ isOpen, onClose, button, children }: { isOpen: boolean; onClose: () => void; button: React.ReactNode; children: React.ReactNode }) {
   const host = useRef<HTMLDivElement>(null)
+  useDismiss(host, isOpen, onClose)
   const [place, setPlace] = useState<{ side: 'left' | 'right'; room: number }>({ side: 'right', room: 640 })
 
   useLayoutEffect(() => {
