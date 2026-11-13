@@ -36,8 +36,8 @@ export function tourSteps(workflow: Workflow): TourStep[] {
     },
     {
       title: 'Tokens today',
-      body: "What today's ticket sessions used, read from Claude's own transcripts. Cache reads are left out: they cost a tenth as much.",
-      target: byText('.views .tool', 'Today'),
+      body: "What today's ticket sessions used, and all of them together, read from Claude's own transcripts. Cache reads are left out: they cost a tenth as much.",
+      target: byText('.props .prop-name', 'Tokens'),
     },
     {
       title: 'Reviews',
