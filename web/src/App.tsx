@@ -77,9 +77,11 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
   layoutRef.current = layout
   const [focusedPane, setFocusedPane] = useState<string | null>(null)
   const [dropAt, setDropAt] = useState<{ paneId: string; zone: Zone } | null>(null)
-  // One pane can take the whole window; the board and the other panes wait behind it.
+  // Full screen: 'all' gives every open terminal the window; a pane's id gives that one chat the window.
+  // The board waits behind either.
   const [zoomed, setZoomed] = useState<string | null>(null)
-  const zoomedPane = panes(layout).find(p => p.id === zoomed)
+  const zoomedPane = zoomed === 'all' ? undefined : panes(layout).find(p => p.id === zoomed)
+  const isFullScreen = zoomed === 'all' || zoomedPane !== undefined
   const tabs = allTabs(layout)
   const focused = panes(layout).find(p => p.id === focusedPane) ?? panes(layout)[0]
   const [dropOn, setDropOn] = useState<string>()
@@ -415,12 +417,21 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
           <button className="tool pane-new" onClick={() => newChat(pane.id)} title="A new blank Claude chat in this pane">
             ＋ Chat
           </button>
+          {zoomed === pane.id ? (
+            <button className="tool pane-zoom" title="Show every open terminal again, still full screen" onClick={() => setZoomed('all')}>
+              ⧉ All terminals
+            </button>
+          ) : (
+            <button className="tool pane-zoom" title="Maximize: this chat alone fills the window" onClick={() => setZoomed(pane.id)}>
+              ▣
+            </button>
+          )}
           <button
-            className="tool pane-zoom"
-            title={zoomed === pane.id ? 'Back to the board' : 'Full screen: this pane fills the window'}
-            onClick={() => setZoomed(zoomed === pane.id ? null : pane.id)}
+            className={`tool pane-zoom${isFullScreen ? ' on' : ''}`}
+            title={isFullScreen ? 'Back to the board' : 'Full screen: every open terminal fills the window'}
+            onClick={() => setZoomed(isFullScreen ? null : 'all')}
           >
-            {zoomed === pane.id ? '⤡ Exit full screen' : '⤢'}
+            {isFullScreen ? '⤡ Exit' : '⤢'}
           </button>
         </div>
         {story && (
@@ -544,7 +555,7 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
 
   return (
     <div
-      className={`app${tabs.length === 0 ? ' no-side' : ''}${zoomedPane ? ' zoomed' : ''}`}
+      className={`app${tabs.length === 0 ? ' no-side' : ''}${isFullScreen ? ' zoomed' : ''}`}
       style={{ '--side-w': `${sideWidth}px` } as React.CSSProperties}
     >
       <div className="main">

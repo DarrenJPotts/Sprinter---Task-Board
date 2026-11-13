@@ -6,9 +6,10 @@ import { projectId } from './api'
 
 // Always dark, in either theme: a terminal reads best light-on-dark. The cursor and selection take the
 // board's yellow. Grey ("bright black") is what Claude Code uses for most secondary text, so it is set
-// well clear of the background instead of the near-black default.
-const themeFor = (_isDark: boolean) => ({
-  background: '#1b1b1f',
+// well clear of the background instead of the near-black default. In dark mode it goes a step darker than
+// the page around it (matching --term-bg), so it still stands apart.
+const themeFor = (isDark: boolean) => ({
+  background: isDark ? '#0d0d10' : '#1b1b1f',
   foreground: '#ececec',
   cursor: '#ffdc58',
   cursorAccent: '#000000',
