@@ -511,3 +511,27 @@ html, body { overflow: hidden; }
 .tool.danger { background: var(--c-red); color: #000; }
 .tool:focus-visible { outline: 3px solid var(--c-pink); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { .modal.confirm { animation: none; } }
+
+/* Nothing in a pane may be wider than the pane, however narrow it gets. */
+/* A flex item is otherwise as wide as its widest table or word, and the pane clips it. */
+.chat-user, .chat-assistant, .chat-steps, .chat-step, .md { min-width: 0; }
+.md { overflow-wrap: anywhere; }
+.md pre, .md table, .md img { max-width: 100%; }
+.md th, .md td { min-width: 6em; overflow-wrap: break-word; }
+/* The one-line ticket header wraps onto a second line before anything runs off the edge. */
+.ticket.compact { flex-wrap: wrap; row-gap: 6px; }
+.ticket.compact > a { white-space: nowrap; }
+.ticket.compact .ticket-title { flex: 1 1 120px; }
+.ticket.compact .tool.primary { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ticket.compact .tool.primary code { max-width: none; }
+.ticket .meta a { white-space: nowrap; }
+.ticket h2 { overflow-wrap: anywhere; }
+.ticket .actions .tool { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pane .tabs { min-width: 0; }
+.pane .tab { max-width: 100%; }
+/* In a short pane the tab bar, ticket header and message box keep their height; the terminal or chat gives
+   way, down to a floor, and past that the pane scrolls rather than squash or overlap anything. */
+.pane { overflow-y: auto; }
+.pane > .tabs, .pane > .ticket, .pane > .ended-bar, .chat-composer { flex-shrink: 0; }
+.pane > .term, .pane > .term-empty, .chat-wrap { min-height: 140px; }
+.chat-scroll { min-height: 60px; }
