@@ -11,9 +11,11 @@ export type Saved = {
   board: Board | null
   /** Your names for tabs, by terminal key. */
   names: Record<string, string>
+  /** How much of each chat's time is already logged, by terminal key, then Claude session id. */
+  logged: Record<string, Record<string, number>>
 }
 
-const EMPTY: Saved = { prefs: { when: {}, pinned: [] }, sessions: {}, board: null, names: {} }
+const EMPTY: Saved = { prefs: { when: {}, pinned: [] }, sessions: {}, board: null, names: {}, logged: {} }
 
 export function loadSaved(dataDir: string): Saved {
   const file = join(dataDir, 'state.json')

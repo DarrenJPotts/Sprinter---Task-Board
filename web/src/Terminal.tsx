@@ -75,10 +75,23 @@ export function Terminal({ termKey, isDark, onExit }: { termKey: string; isDark:
     const socket = new WebSocket(`${scheme}://${location.host}/ws/terminals/${encodeURIComponent(projectId())}/${encodeURIComponent(termKey)}`)
     const send = (message: object) => socket.readyState === WebSocket.OPEN && socket.send(JSON.stringify(message))
 
-    socket.onopen = () => send({ type: 'resize', cols: term.cols, rows: term.rows })
+    socket.onopen = () => {
+      sent = `${term.cols}x${term.rows}`
+      send({ type: 'resize', cols: term.cols, rows: term.rows })
+    }
+    let queued = ''
+    let frame: number | null = null
     socket.onmessage = event => {
       const message = JSON.parse(String(event.data)) as { type: string; data?: string }
-      if (message.type === 'output' && message.data) term.write(message.data)
+      if (message.type === 'output' && message.data) {
+        // Everything that arrives within one frame is drawn in one go: no half-repainted screen shows.
+        queued += message.data
+        frame ??= requestAnimationFrame(() => {
+          frame = null
+          term.write(queued)
+          queued = ''
+        })
+      }
       if (message.type === 'exit') {
         term.write('\r\n\x1b[2m[session ended]\x1b[0m\r\n')
         exitRef.current()
@@ -86,14 +99,26 @@ export function Terminal({ termKey, isDark, onExit }: { termKey: string; isDark:
     }
     const typing = term.onData(data => send({ type: 'input', data }))
 
+    // A resize makes Claude Code clear and repaint its whole screen, so the pane reports a new size
+    // only once it has settled, and only when the grid really changed.
+    let sent = ''
+    let settle: ReturnType<typeof setTimeout> | undefined
     const resize = new ResizeObserver(() => {
-      fit.fit()
-      send({ type: 'resize', cols: term.cols, rows: term.rows })
+      clearTimeout(settle)
+      settle = setTimeout(() => {
+        fit.fit()
+        const size = `${term.cols}x${term.rows}`
+        if (size === sent) return
+        sent = size
+        send({ type: 'resize', cols: term.cols, rows: term.rows })
+      }, 120)
     })
     resize.observe(host.current)
     term.focus()
 
     return () => {
+      clearTimeout(settle)
+      if (frame !== null) cancelAnimationFrame(frame)
       termRef.current = null
       resize.disconnect()
       typing.dispose()

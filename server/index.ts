@@ -7,7 +7,10 @@ import { fileURLToPath } from 'node:url'
 import express from 'express'
 import { WebSocketServer } from 'ws'
 
-import type { BgTask, NewProject, Pin, Prefs, SessionInfo, Settings, Snapshot, TokenUsage } from '../shared/types.js'
+import { makeRules } from '../shared/workflow.js'
+import type { BgTask, ChatTime, Launched, NewProject, NextStep, Pin, Prefs, SessionInfo, Settings, Snapshot, TokenUsage } from '../shared/types.js'
+import { followChat, readChat } from './chat.js'
+import { addCompletedWork, nodeIo } from './ado.js'
 import { checkHealth } from './health.js'
 import { clearServerLog, logError, serverLog } from './log.js'
 import type { Project } from './projects.js'
@@ -21,10 +24,11 @@ import {
   openTerminal,
   removeWorktree,
   scrollbackKeys,
+  sendEscape,
   sendLine,
   worktreeKeys,
 } from './terminals.js'
-import { hasTranscript, sessionTasks, sessionUsage } from './usage.js'
+import { hasTranscript, sessionActiveMs, sessionTasks, sessionUsage } from './usage.js'
 
 const REFRESH_MS = 5 * 60_000
 
@@ -51,10 +55,60 @@ function sessionsOf(p: Project): SessionInfo[] {
   })
 }
 
+/** The last batch of ticket sessions a chat started, per project, so open pages add their tabs. */
+const launched = new Map<string, Launched>()
+
+/** Every ticket still in play with the command its next step runs, the same one its ▶ Claude button sends. */
+function nextSteps(p: Project): NextStep[] {
+  const board = p.saved.board
+  if (!board) return []
+  const rules = makeRules(workflowOf(p), board.columns, p.config.commandTemplate)
+  const running = new Set(listTerminals(p).filter(t => t.isAlive).map(t => t.key))
+  return board.stories
+    .filter(story => !rules.isDone(story))
+    .map(story => ({
+      id: story.id,
+      title: story.title,
+      column: story.column,
+      stage: rules.stageGroup(story),
+      command: rules.nextCommand(story, p.hints[story.id]),
+      isRunning: running.has(String(story.id)),
+      isOffSprint: story.isOffSprint === true,
+    }))
+}
+
+/** Each ticket chat's worked time, less what was already logged against that session. */
+function timeOf(p: Project): Record<string, ChatTime> {
+  const out: Record<string, ChatTime> = {}
+  for (const [key, sessionId] of Object.entries(p.saved.sessions)) {
+    if (!/^\d+$/.test(key)) continue
+    const activeMs = sessionActiveMs(sessionId)
+    if (activeMs === 0) continue
+    out[key] = { activeMs, unloggedMs: Math.max(0, activeMs - (p.saved.logged[key]?.[sessionId] ?? 0)) }
+  }
+  return out
+}
+
+/** Counts a ticket chat's time so far as logged, whether it went to the board or not. */
+function markLogged(p: Project, key: string) {
+  const sessionId = p.saved.sessions[key]
+  if (!sessionId) return
+  p.saved.logged[key] = { ...p.saved.logged[key], [sessionId]: sessionActiveMs(sessionId) }
+  saveState(p)
+}
+
 function tasksOf(p: Project): Record<string, BgTask[]> {
   const out: Record<string, BgTask[]> = {}
+  const terminals = new Map(listTerminals(p).map(t => [t.key, t]))
   for (const [key, sessionId] of Object.entries(p.saved.sessions)) {
-    const tasks = sessionTasks(sessionId)
+    // A background task lives inside the Claude process that started (or resumed) it. The transcript
+    // never says when that process dies, so one still "running" from before the chat's current process
+    // (or with no process at all) ended with it.
+    const terminal = terminals.get(key)
+    const since = terminal?.isAlive ? terminal.startedAt : Infinity
+    const tasks = sessionTasks(sessionId).map(task =>
+      task.status === 'running' && !(Date.parse(task.resumedAt ?? task.startedAt ?? '') >= since) ? { ...task, status: 'ended' } : task,
+    )
     if (tasks.length > 0) out[key] = tasks
   }
   return out
@@ -81,6 +135,8 @@ const snapshot = (p: Project): Snapshot => ({
   error: p.error,
   isRefreshing: p.isRefreshing,
   buildId: buildId(),
+  time: timeOf(p),
+  launched: launched.get(p.config.id) ?? { seq: 0, keys: [] },
   project: summary(p),
   projects: allProjects().map(summary),
   workflow: workflowOf(p),
@@ -211,6 +267,65 @@ app.post('/api/terminals/:key', async (req, res) => {
   }
 })
 
+// What each ticket would run next, for a chat (Mission Control) to pick sessions to start.
+app.get('/api/next', (req, res) => {
+  res.json(nextSteps(projectOf(req)))
+})
+
+// Starts a Claude session for each ticket, each in its own terminal and worktree, with its next command
+// (or the one given). One already running is left alone. Open pages add a tab for every one started.
+app.post('/api/sessions/start', async (req, res) => {
+  const p = projectOf(req)
+  const { items } = (req.body ?? {}) as { items?: { id?: number | string; command?: string }[] }
+  if (!Array.isArray(items) || items.length === 0) {
+    res.status(400).json({ message: 'Send items: [{ id, command? }]' })
+    return
+  }
+  if (items.length > 12) {
+    res.status(400).json({ message: 'At most 12 sessions at a time: each one is a Claude run of its own' })
+    return
+  }
+  const steps = new Map(nextSteps(p).map(step => [String(step.id), step]))
+  const started: { id: string; command: string }[] = []
+  const skipped: { id: string; why: string }[] = []
+  // One at a time: each may cut a git worktree, and git takes a lock on the repo for that.
+  for (const item of items) {
+    const id = String(item.id ?? '')
+    const step = steps.get(id)
+    if (!step) {
+      skipped.push({ id, why: 'not a ticket on the board, or already done' })
+      continue
+    }
+    if (step.isRunning) {
+      skipped.push({ id, why: 'its session is already running' })
+      continue
+    }
+    const command = item.command?.trim() || step.command
+    try {
+      await openTerminal(p, id, { prompt: command })
+      started.push({ id, command })
+    } catch (caught) {
+      logError(`${p.config.id}: start ${id}`, caught)
+      skipped.push({ id, why: message(caught) })
+    }
+  }
+  if (started.length > 0) {
+    const last = launched.get(p.config.id)?.seq ?? 0
+    launched.set(p.config.id, { seq: last + 1, keys: started.map(s => s.id) })
+  }
+  res.json({ started, skipped })
+})
+
+app.post('/api/terminals/:key/escape', (req, res) => {
+  const p = projectOf(req)
+  try {
+    sendEscape(p, req.params.key)
+    res.json(snapshot(p))
+  } catch (caught) {
+    res.status(409).json({ message: message(caught) })
+  }
+})
+
 app.post('/api/terminals/:key/line', (req, res) => {
   const p = projectOf(req)
   const { text } = (req.body ?? {}) as { text?: string }
@@ -253,6 +368,42 @@ app.put('/api/names/:key', (req, res) => {
 })
 
 /** Forgets a saved session: its terminal stops and its saved screen goes. Claude keeps its transcript. */
+// Adds hours to one of the ticket's own tasks on the board (Completed Work), and counts the chat's time as logged.
+app.post('/api/time/:key/log', async (req, res) => {
+  const p = projectOf(req)
+  const key = req.params.key
+  const { taskId, hours } = (req.body ?? {}) as { taskId?: number; hours?: number }
+  const story = p.saved.board?.stories.find(s => String(s.id) === key)
+  const task = story?.tasks.find(t => t.id === Number(taskId))
+  if (p.config.tracker !== 'ado' || !p.config.ado) {
+    res.status(400).json({ message: 'Logging time needs an Azure DevOps project' })
+    return
+  }
+  if (!task) {
+    res.status(400).json({ message: `Task ${taskId} is not one of ${key}'s tasks` })
+    return
+  }
+  if (typeof hours !== 'number' || !(hours > 0) || hours > 24) {
+    res.status(400).json({ message: 'Hours must be more than 0 and at most 24' })
+    return
+  }
+  try {
+    task.completed = await addCompletedWork(nodeIo(p.config.ado), p.config.ado, task.id, hours)
+    markLogged(p, key)
+    res.json(snapshot(p))
+  } catch (caught) {
+    logError(`log time on ${task.id}`, caught)
+    res.status(502).json({ message: message(caught) })
+  }
+})
+
+// Counts the chat's time as logged without writing to the board, for time logged some other way.
+app.post('/api/time/:key/clear', (req, res) => {
+  const p = projectOf(req)
+  markLogged(p, req.params.key)
+  res.json(snapshot(p))
+})
+
 app.delete('/api/sessions/:key', (req, res) => {
   const p = projectOf(req)
   const key = req.params.key
@@ -262,6 +413,33 @@ app.delete('/api/sessions/:key', (req, res) => {
   saveState(p)
   rmSync(join(p.config.dataDir, 'scrollback', `${key}.log`), { force: true })
   res.json(snapshot(p))
+})
+
+// A chat's conversation for the chat view, read from Claude's own transcript; ?from= continues a read.
+app.get('/api/chat/:key', (req, res) => {
+  const p = projectOf(req)
+  const from = req.query.from === undefined ? -1 : Number(req.query.from)
+  res.json(readChat(p.saved.sessions[req.params.key], Number.isFinite(from) ? from : -1))
+})
+
+// The same conversation pushed as Claude writes it (server-sent events), so the chat view never waits on a poll.
+app.get('/api/chat/:key/stream', (req, res) => {
+  const p = projectOf(req)
+  const key = req.params.key
+  const from = req.query.from === undefined ? -1 : Number(req.query.from)
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
+  res.write(': open\n\n')
+  const stop = followChat(
+    () => p.saved.sessions[key],
+    Number.isFinite(from) ? from : -1,
+    page => res.write(`data: ${JSON.stringify(page)}\n\n`),
+  )
+  // A quiet line now and then keeps the connection from being dropped as idle.
+  const ping = setInterval(() => res.write(': ping\n\n'), 25_000)
+  req.on('close', () => {
+    clearInterval(ping)
+    stop()
+  })
 })
 
 // Only a background task's own output file may be read: one under the temp folder, ending .output.
@@ -421,6 +599,8 @@ server.on('upgrade', (req, socket, head) => {
 
 // SPRINTER_PORT runs a second copy beside the usual one, e.g. to try a packaged build.
 const port = Number(process.env.SPRINTER_PORT) || appConfig.port
+// Every terminal inherits this, so a chat running in one can reach the API (the sprinter skill uses it).
+process.env.HQ_URL = `http://127.0.0.1:${port}`
 server.listen(port, '127.0.0.1', () => {
   console.log(`hq on http://localhost:${port}`)
   const active = getProject(null)

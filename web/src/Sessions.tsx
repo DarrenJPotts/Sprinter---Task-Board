@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 
 import type { BgTask, SessionInfo, TerminalInfo } from '../../shared/types'
 import { api } from './api'
+import { ask } from './Dialog'
 import { compact } from './tokens'
 
 const ago = (iso?: string) => {
@@ -43,27 +44,66 @@ export function Tasks(props: {
             {props.label(key)} ↗
           </button>
           {props.tasks[key]!.slice(0, 12).map(task => (
-            <div key={task.id} className="task-row">
-              <span className={`tag ${STATUS_COLOR[task.status] ?? 'gray'}`}>{task.status}</span>
-              <span className="task-kind" title={task.kind === 'agent' ? 'Agent' : 'Shell command'}>
-                {task.kind === 'agent' ? '🤖' : '⚙'}
-              </span>
-              <div className="task-text">
-                <div>{task.description}</div>
-                <div className="count">
-                  {ago(task.startedAt)}
-                  {task.summary ? ` · ${task.summary}` : ''}
-                </div>
-              </div>
-              {task.outputFile && (
-                <button className="tool" onClick={() => props.onShowOutput(task)}>
-                  Output
-                </button>
-              )}
-            </div>
+            <TaskRow key={task.id} task={task} onShowOutput={props.onShowOutput} />
           ))}
         </div>
       ))}
+    </div>
+  )
+}
+
+function TaskRow({ task, onShowOutput }: { task: BgTask; onShowOutput: (task: BgTask) => void }) {
+  return (
+    <div className="task-row">
+      <span className={`tag ${STATUS_COLOR[task.status] ?? 'gray'}`}>{task.status}</span>
+      <span className="task-kind" title={task.kind === 'agent' ? 'Agent' : 'Shell command'}>
+        {task.kind === 'agent' ? '🤖' : '⚙'}
+      </span>
+      <div className="task-text">
+        <div>{task.description}</div>
+        <div className="count">
+          {ago(task.startedAt)}
+          {task.summary ? ` · ${task.summary}` : ''}
+        </div>
+      </div>
+      {task.outputFile && (
+        <button className="tool" onClick={() => onShowOutput(task)}>
+          Output
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** The floating button over one terminal: that chat's own background tasks, opening upward. */
+export function PaneTasks({ tasks, onShowOutput, isInline }: { tasks: BgTask[]; onShowOutput: (task: BgTask) => void; isInline?: boolean }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const running = tasks.filter(t => t.status === 'running').length
+  const sorted = [...tasks].sort((a, b) => Number(b.status === 'running') - Number(a.status === 'running'))
+
+  return (
+    <div className={`pane-tasks${isInline ? ' inline' : ''}`}>
+      {isOpen && (
+        <div className="pane-tasks-list">
+          <div className="modal-head">
+            <h3>This chat's tasks</h3>
+            <button className="tool" onClick={() => setIsOpen(false)}>
+              ✕
+            </button>
+          </div>
+          {sorted.slice(0, 12).map(task => (
+            <TaskRow key={task.id} task={task} onShowOutput={onShowOutput} />
+          ))}
+        </div>
+      )}
+      <button
+        className={`tool pane-tasks-button${running ? ' primary' : ''}`}
+        onClick={() => setIsOpen(!isOpen)}
+        title="Background shell commands and agents this chat started"
+      >
+        🧵 Tasks
+        <span className="badge">{running ? `${running} running` : tasks.length}</span>
+      </button>
     </div>
   )
 }
@@ -172,7 +212,14 @@ export function Sessions(props: {
             <button
               className="tool"
               title="Forget: stop it and drop it from this list (Claude keeps the transcript)"
-              onClick={() => confirm(`Forget "${props.label(session.key)}"? Its terminal stops; Claude keeps the transcript.`) && props.onForget(session.key)}
+              onClick={async () =>
+                (await ask({
+                  title: `Forget ${props.label(session.key)}?`,
+                  body: 'Its terminal stops and it leaves this list. Claude keeps the conversation, so nothing is lost.',
+                  confirm: 'Forget',
+                  isDanger: true,
+                })) && props.onForget(session.key)
+              }
             >
               🗑
             </button>

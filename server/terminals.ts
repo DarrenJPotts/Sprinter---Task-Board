@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import type { WriteStream } from 'node:fs'
 import { join } from 'node:path'
 
@@ -40,6 +40,9 @@ type Terminal = {
   /** The latest output as plain text, for spotting a question on screen. */
   tail: string
   log: WriteStream
+  /** Output not yet sent to the windows, and the timer that will send it. */
+  pending: string
+  flush: NodeJS.Timeout | null
 }
 
 // Keyed `<project>/<key>`: two projects may both have an issue 12.
@@ -135,6 +138,14 @@ async function workdir(p: Project, key: string): Promise<string> {
     // Detached: the work's own branch is cut by whatever runs in it.
     await git(['worktree', 'add', '--detach', path, config.baseRef], config.repoPath)
   }
+  // Claude asks in every new folder which of the repo's MCP servers to use, and keeps the answer in the
+  // git-ignored .claude/settings.local.json. A worktree starts with the repo's own answer instead.
+  const local = join(config.repoPath, '.claude', 'settings.local.json')
+  const copy = join(path, '.claude', 'settings.local.json')
+  if (existsSync(local) && !existsSync(copy)) {
+    mkdirSync(join(path, '.claude'), { recursive: true })
+    copyFileSync(local, copy)
+  }
 
   return path
 }
@@ -205,6 +216,8 @@ export async function openTerminal(
     lastInputAt: Date.now(),
     tail: '',
     log: openLog(p, key),
+    pending: '',
+    flush: null,
   }
   terminals.set(slot(p, key), terminal)
   if (terminal.scrollback) {
@@ -219,7 +232,15 @@ export async function openTerminal(
     terminal.tail = (terminal.tail + plain(data)).slice(-TAIL_CHARS)
     terminal.lastOutputAt = Date.now()
     terminal.log.write(data)
-    broadcast(terminal, { type: 'output', data })
+    terminal.pending += data
+    // Claude Code repaints its whole screen by clearing it first; sent in pieces, the page would draw
+    // the blank in between. A few milliseconds is enough to keep a repaint in one message.
+    terminal.flush ??= setTimeout(() => {
+      terminal.flush = null
+      const chunk = terminal.pending
+      terminal.pending = ''
+      if (chunk) broadcast(terminal, { type: 'output', data: chunk })
+    }, 12)
   })
   shell.onExit(() => {
     terminal.isAlive = false
@@ -299,7 +320,19 @@ export function sendLine(p: Project, key: string, text: string) {
     throw new Error(`Claude is not running in ${key}: it is at the shell prompt`)
   }
   terminal.lastInputAt = Date.now()
-  terminal.pty.write(`${text.replace(/[\r\n]+/g, ' ')}\r`)
+  // The message goes in as one paste, so a line break in it stays part of the message. Enter follows on
+  // its own a moment later: in the same write, Claude Code reads the burst as a paste and the Enter
+  // becomes a new line in its prompt instead of sending.
+  terminal.pty.write(`\x1b[200~${text.replace(/\r\n?/g, '\n')}\x1b[201~`)
+  setTimeout(() => terminal.isAlive && terminal.pty.write('\r'), 150)
+}
+
+/** Esc to a Claude chat: it stops what Claude is doing, as pressing Esc in the terminal does. */
+export function sendEscape(p: Project, key: string) {
+  const terminal = terminals.get(slot(p, key))
+  if (!terminal?.isAlive) throw new Error(`${key} is not running`)
+  if (!terminal.isClaude) throw new Error(`${key} is a plain shell, not a Claude chat`)
+  terminal.pty.write('\x1b')
 }
 
 export function closeTerminal(p: Project, key: string) {

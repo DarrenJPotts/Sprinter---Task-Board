@@ -1,4 +1,4 @@
-import type { HealthCheck, LogEntry, NewProject, Prefs, ProjectSummary, Settings, Snapshot } from '../../shared/types'
+import type { ChatPage, HealthCheck, LogEntry, NewProject, Prefs, ProjectSummary, Settings, Snapshot } from '../../shared/types'
 
 // The project every call is about; the page sets it once it knows which one is open.
 let currentProject = ''
@@ -67,8 +67,13 @@ export const api = {
   closeTerminal: (key: string) => call(`/api/terminals/${key}`, { method: 'DELETE' }),
   rename: (key: string, name: string) => call(`/api/names/${key}`, { method: 'PUT', body: JSON.stringify({ name }) }),
   forgetSession: (key: string) => call(`/api/sessions/${key}`, { method: 'DELETE' }),
+  logTime: (key: string, taskId: number, hours: number) =>
+    call(`/api/time/${key}/log`, { method: 'POST', body: JSON.stringify({ taskId, hours }) }),
+  clearTime: (key: string) => call(`/api/time/${key}/clear`, { method: 'POST' }),
+  chat: (key: string, from: number) => call<ChatPage>(`/api/chat/${encodeURIComponent(key)}${from >= 0 ? `?from=${from}` : ''}`),
   taskOutput: (file: string) => call<{ text: string; isCut: boolean; size: number }>(`/api/task-output?file=${encodeURIComponent(file)}`),
   openPin: (key: string) => call(`/api/pins/${key}`, { method: 'POST' }),
+  sendEscape: (key: string) => call(`/api/terminals/${key}/escape`, { method: 'POST' }),
   sendLine: (key: string, text: string) => call(`/api/terminals/${key}/line`, { method: 'POST', body: JSON.stringify({ text }) }),
   removeWorktree: (key: string) => call(`/api/worktrees/${key}`, { method: 'DELETE' }),
   health: () => call<HealthCheck[]>('/api/health'),

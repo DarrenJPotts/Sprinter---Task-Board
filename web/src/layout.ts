@@ -52,6 +52,15 @@ export function openTab(node: LayoutNode | null, key: string, into?: string): { 
   }
 }
 
+/** Adds tabs behind the one on show in pane `into` (or the first pane), skipping any already open. */
+export function addTabs(node: LayoutNode | null, keys: string[], into?: string): LayoutNode | null {
+  const fresh = keys.filter(key => !paneOf(node, key))
+  if (fresh.length === 0) return node
+  if (!node) return emptyPane(fresh, fresh[0])
+  const target = panes(node).find(p => p.id === into) ?? panes(node)[0]!
+  return mapPanes(node, p => (p.id === target.id ? { ...p, tabs: [...p.tabs, ...fresh], active: p.active ?? fresh[0]! } : p))
+}
+
 /** Closes a tab; a pane left with no tabs disappears, and its split with it. */
 export function closeTab(node: LayoutNode | null, key: string): LayoutNode | null {
   if (!node) return null

@@ -4,14 +4,17 @@ import { WHENS, order, remainingHours, reviewThreads, shortDate, workingDaysLeft
 import { makeRules } from '../../shared/workflow'
 import type { Rules } from '../../shared/workflow'
 import type { PillColor } from '../../shared/model'
-import type { BgTask, Pin, Prefs, ProjectSummary, Snapshot, Story, TerminalInfo, TokenUsage, When } from '../../shared/types'
+import type { BgTask, ChatTime, Pin, Prefs, ProjectSummary, Snapshot, Story, TerminalInfo, TokenUsage, When } from '../../shared/types'
 import { api, setProject } from './api'
-import { Card, Tag } from './Card'
+import { Card, Tag, itemRef } from './Card'
+import { DialogHost, ask } from './Dialog'
 import { AddPin, DebugLog, Inbox, NewProjectForm, Reviews, Setup, inboxItems, useSetupProblems } from './Panels'
-import { activate, allTabs, closeTab as closeIn, emptyPane, moveTab, openTab as openIn, panes, setRatio, zoneAt } from './layout'
+import { activate, addTabs, allTabs, closeTab as closeIn, emptyPane, moveTab, openTab as openIn, panes, setRatio, zoneAt } from './layout'
 import type { LayoutNode, PaneNode, SplitNode, Zone } from './layout'
-import { Sessions, TaskOutput, Tasks } from './Sessions'
+import { ChatView } from './ChatView'
+import { PaneTasks, Sessions, TaskOutput, Tasks } from './Sessions'
 import { Terminal } from './Terminal'
+import { TimeLog } from './TimeLog'
 import { Tour } from './Tour'
 import { tourSteps } from './tourSteps'
 import { billed, compact, usageTitle } from './tokens'
@@ -88,6 +91,8 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
   const [isTasksOpen, setIsTasksOpen] = useState(false)
   const [isSessionsOpen, setIsSessionsOpen] = useState(false)
   const [outputTask, setOutputTask] = useState<BgTask | null>(null)
+  // Chats shown as a conversation instead of their terminal; remembered per chat.
+  const [chatViews, setChatViews] = useLocal<string[]>('hq.chatViews', [])
   // The tab being renamed in place, and what has been typed so far.
   const [renaming, setRenaming] = useState<{ key: string; draft: string } | null>(null)
   const setupProblems = useSetupProblems()
@@ -222,6 +227,18 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
     setFocusedPane(opened.paneId)
   }
   const closeTab = (key: string) => setLayout(closeIn(layoutRef.current, key))
+
+  // Sessions a chat started through the API get a tab each, behind the one you are looking at. The batch
+  // already there when the page loads was handled by whichever page was open then.
+  const seenLaunch = useRef<number | null>(null)
+  const launch = snap?.launched
+  useEffect(() => {
+    if (!launch) return
+    if (seenLaunch.current !== null && launch.seq > seenLaunch.current) {
+      setLayout(addTabs(layoutRef.current, launch.keys, focused?.id))
+    }
+    seenLaunch.current = launch.seq
+  }, [launch?.seq])
   // A blank Claude chat at the repo root in its own tab; its conversation is kept and resumes like any other.
   const newChat = (into?: string) => {
     const key = `chat-${Date.now().toString(36)}`
@@ -309,6 +326,9 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
   const renderPane = (pane: PaneNode) => {
     const current = pane.active
     const story = current && !pinOf(current) ? byId.get(current.replace(/-shell$/, '')) : undefined
+    // Only a Claude chat has a conversation to show; a plain shell has none.
+    const hasChat = !!current && !current.endsWith('-shell') && (snap?.sessions ?? []).some(s => s.key === current)
+    const isChatView = hasChat && chatViews.includes(current!)
 
     return (
       <div
@@ -382,6 +402,16 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
               ))}
             </div>
           ))}
+          {hasChat && (
+            <div className="view-switch" role="group" aria-label="Show this chat as">
+              <button className={isChatView ? '' : 'on'} onClick={() => setChatViews(chatViews.filter(k => k !== current))} title="The live terminal: type and approve here">
+                Terminal
+              </button>
+              <button className={isChatView ? 'on' : ''} onClick={() => setChatViews([...chatViews.filter(k => k !== current), current!])} title="The conversation, for reading: no flicker, full scroll">
+                Chat
+              </button>
+            </div>
+          )}
           <button className="tool pane-new" onClick={() => newChat(pane.id)} title="A new blank Claude chat in this pane">
             ＋ Chat
           </button>
@@ -401,6 +431,10 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
             command={rules.nextCommand(story, hints[story.id])}
             why={hints[story.id]?.why}
             usage={snap?.usage[String(story.id)]}
+            time={snap?.time?.[String(story.id)]}
+            canLogTime={snap?.project.tracker === 'ado'}
+            onLogTime={(taskId, hours) => run(api.logTime(String(story.id), taskId, hours))}
+            onClearTime={() => run(api.clearTime(String(story.id)))}
             isLive={live.has(String(story.id))}
             canResume={resumable.has(String(story.id))}
             onResume={() => resume(String(story.id))}
@@ -415,14 +449,31 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
               openTab(key, pane.id)
             }}
             onStop={() => void run(api.closeTerminal(String(story.id)))}
-            onRemove={() => {
-              if (!confirm(`Remove the worktree for ${story.id}? Its terminals stop. Git refuses if it has uncommitted changes.`)) return
+            onRemove={async () => {
+              const ok = await ask({
+                title: `Remove the worktree for ${itemRef(story)}?`,
+                body: 'Its terminals stop. Git refuses if the worktree has uncommitted changes.',
+                confirm: 'Remove worktree',
+                isDanger: true,
+              })
+              if (!ok) return
               void run(api.removeWorktree(String(story.id)))
               closeTab(`${story.id}-shell`)
             }}
           />
         )}
-        {current && live.has(current) ? (
+        {isChatView ? (
+          <ChatView
+            termKey={current!}
+            isLive={live.has(current!)}
+            state={snap?.terminals.find(t => t.key === current)?.state}
+            onSend={text => api.sendLine(current!, text)}
+            onEscape={() => void run(api.sendEscape(current!))}
+            onResume={resumable.has(current!) ? () => resume(current!) : undefined}
+            onShowTerminal={() => setChatViews(chatViews.filter(k => k !== current))}
+            tools={snap?.tasks[current!]?.length ? <PaneTasks key={current} tasks={snap.tasks[current!]!} onShowOutput={setOutputTask} isInline /> : undefined}
+          />
+        ) : current && live.has(current) ? (
           <Terminal termKey={current} isDark={isDark} onExit={() => void run(api.snapshot())} />
         ) : current && snap?.scrollback.includes(current) ? (
           <>
@@ -449,6 +500,9 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
             )}
           </div>
         )}
+        {!isChatView && current && (live.has(current) || snap?.scrollback.includes(current)) && snap?.tasks[current]?.length ? (
+          <PaneTasks key={current} tasks={snap.tasks[current]!} onShowOutput={setOutputTask} />
+        ) : null}
         {dropAt?.paneId === pane.id && <div className={`drop-zone ${dropAt.zone}`} />}
       </div>
     )
@@ -649,7 +703,16 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
                 title={`${pin.mode === 'fresh' ? 'Fresh run' : 'Keep chat'}: ${pin.prompt || 'no prompt'}`}
                 onClick={async () => {
                   // A kept chat that is already open is just shown; a fresh run restarts, so ask first.
-                  if (pin.mode === 'fresh' && terminal?.isAlive && !confirm(`Restart ${pin.label} with a fresh run?`)) {
+                  const isRestart = pin.mode === 'fresh' && terminal?.isAlive
+                  if (
+                    isRestart &&
+                    !(await ask({
+                      title: `Restart ${pin.label}?`,
+                      body: 'It is running now. A fresh run stops it and starts over with its prompt.',
+                      confirm: 'Restart',
+                      isDanger: true,
+                    }))
+                  ) {
                     openTab(pin.key)
                     return
                   }
@@ -751,6 +814,7 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
       {isSetupOpen && <Setup onClose={() => setIsSetupOpen(false)} />}
       {isTourOpen && <Tour steps={tourSteps(rules.workflow)} onClose={closeTour} />}
       {outputTask && <TaskOutput task={outputTask} onClose={() => setOutputTask(null)} />}
+      <DialogHost />
     </div>
   )
 }
@@ -766,6 +830,10 @@ function TicketHead(props: {
   canResume: boolean
   onResume: () => void
   usage?: TokenUsage
+  time?: ChatTime
+  canLogTime: boolean
+  onLogTime: (taskId: number, hours: number) => Promise<unknown>
+  onClearTime: () => Promise<unknown>
   hasWorktree: boolean
   onStart: (prompt: string) => void
   onShell: () => void
@@ -775,13 +843,50 @@ function TicketHead(props: {
   const { rules, story, command, why, isLive } = props
   const lines = rules.drift(story)
   const threads = reviewThreads(story)
+  const [isCompact, setIsCompact] = useLocal('hq.ticketCompact', false)
+
+  // One line, so the terminal gets the room: the ticket, its column, anything wrong, and the main action.
+  if (isCompact) {
+    return (
+      <div className="ticket compact">
+        <a href={story.url} target="_blank" rel="noreferrer">
+          {itemRef(story)} ↗
+        </a>
+        <Tag color={rules.colorOf(story.column)}>{story.column}</Tag>
+        <span className="ticket-title" title={story.title}>
+          {story.title}
+        </span>
+        {threads > 0 && <Tag color="red">💬 {threads}</Tag>}
+        {lines.length > 0 && (
+          <span className="drift-flag" title={lines.join(' · ')}>
+            ⚠
+          </span>
+        )}
+        {isLive ? (
+          <button className="tool" onClick={props.onStop}>
+            ■ Stop
+          </button>
+        ) : (
+          <button className="tool primary" onClick={() => props.onStart(command)} title={`Start Claude: ${command}`}>
+            ▶ <code>{command}</code>
+          </button>
+        )}
+        <button className="tool" onClick={() => setIsCompact(false)} title="Show the whole ticket">
+          ▾
+        </button>
+      </div>
+    )
+  }
 
   return (
     <div className="ticket">
+      <button className="tool ticket-collapse" onClick={() => setIsCompact(true)} title="Shrink the ticket to one line">
+        ▴
+      </button>
       <h2>{story.title}</h2>
       <div className="meta">
         <a href={story.url} target="_blank" rel="noreferrer">
-          {story.id} ↗
+          {itemRef(story)} ↗
         </a>
         <Tag color={rules.colorOf(story.column)}>{story.column}</Tag>
         {story.tier && <Tag color="gray">{story.tier}</Tag>}
@@ -794,6 +899,14 @@ function TicketHead(props: {
           {props.usage.today > 0 && ` · ${compact(props.usage.today)} today`}
         </p>
       )}
+      <TimeLog
+        key={story.id}
+        time={props.time}
+        tasks={story.tasks}
+        canLog={props.canLogTime}
+        onLog={props.onLogTime}
+        onClear={props.onClearTime}
+      />
       {lines.length > 0 && <div className="drift">⚠ {lines.join(' · ')}</div>}
       <div className="actions">
         {isLive ? (

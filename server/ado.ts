@@ -8,6 +8,8 @@ import type { AdoConfig } from './config.js'
 export type AdoIo = {
   get: <T>(url: string) => Promise<T>
   post: <T>(url: string, body: unknown) => Promise<T>
+  /** A JSON Patch, as ADO takes it for changing a work item. */
+  patch: <T>(url: string, body: unknown) => Promise<T>
 }
 
 /** The team board's columns in order, from its requirement-level (Stories) board. */
@@ -339,11 +341,14 @@ async function bearer(config: AdoConfig) {
   return token.value
 }
 
-async function adoCall<T>(config: AdoConfig, url: string, body?: unknown): Promise<T> {
+async function adoCall<T>(config: AdoConfig, url: string, body?: unknown, isPatch = false): Promise<T> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const response = await fetch(url, {
-      method: body === undefined ? 'GET' : 'POST',
-      headers: { Authorization: `Bearer ${await bearer(config)}`, 'Content-Type': 'application/json' },
+      method: isPatch ? 'PATCH' : body === undefined ? 'GET' : 'POST',
+      headers: {
+        Authorization: `Bearer ${await bearer(config)}`,
+        'Content-Type': isPatch ? 'application/json-patch+json' : 'application/json',
+      },
       body: body === undefined ? undefined : JSON.stringify(body),
     })
     if (response.status === 401 && attempt === 0) {
@@ -361,4 +366,20 @@ async function adoCall<T>(config: AdoConfig, url: string, body?: unknown): Promi
 export const nodeIo = (config: AdoConfig): AdoIo => ({
   get: url => adoCall(config, url),
   post: (url, body) => adoCall(config, url, body),
+  patch: (url, body) => adoCall(config, url, body, true),
 })
+
+const COMPLETED = 'Microsoft.VSTS.Scheduling.CompletedWork'
+
+/** Adds hours to a task's Completed Work and returns the new total. Fails, rather than overwrites, if someone changed the task meanwhile. */
+export async function addCompletedWork(io: AdoIo, config: AdoConfig, taskId: number, hours: number): Promise<number> {
+  const url = `${base(config)}/_apis/wit/workitems/${taskId}`
+  const item = await io.get<{ rev: number; fields: Record<string, unknown> }>(`${url}?fields=${COMPLETED}&api-version=7.1`)
+  const total = Math.round((num(item.fields[COMPLETED]) + hours) * 100) / 100
+  await io.patch(`${url}?api-version=7.1`, [
+    { op: 'test', path: '/rev', value: item.rev },
+    { op: 'add', path: `/fields/${COMPLETED}`, value: total },
+  ])
+
+  return total
+}

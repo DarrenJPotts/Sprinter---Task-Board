@@ -4,6 +4,9 @@ import type { Rules } from '../../shared/workflow'
 import type { PlanHint, Story, TerminalInfo, TokenUsage } from '../../shared/types'
 import { billed, compact, usageTitle } from './tokens'
 
+/** How the tracker writes an item's id: AB#123 on Azure DevOps, #123 on GitHub. */
+export const itemRef = (story: Story) => (/github.com/.test(story.url) ? `#${story.id}` : `AB#${story.id}`)
+
 export function Tag({ color, children }: { color: PillColor; children: React.ReactNode }) {
   return <span className={`tag ${color}`}>{children}</span>
 }
@@ -46,7 +49,7 @@ export function Card({ rules, story, hint, isSelected, isStarred, terminal, usag
       <div className="card-title">
         {isStarred && '★ '}
         {story.type === 'Bug' && '🐞 '}
-        {story.title}
+        <span className="card-ref">{itemRef(story)}</span> {story.title}
       </div>
       <div className="card-tags">
         {showColumn && <Tag color={rules.colorOf(story.column)}>{story.column}</Tag>}

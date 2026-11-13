@@ -109,6 +109,8 @@ export type BgTask = {
   /** running, completed, failed, killed: whatever the completion notice said. */
   status: string
   startedAt?: string
+  /** When an agent was last sent back to work (SendMessage), so a later process owns it again. */
+  resumedAt?: string
   endedAt?: string
   summary?: string
   outputFile?: string
@@ -207,4 +209,42 @@ export type Snapshot = {
   reviews: ReviewPr[]
   /** Changes with every UI build; an open page that sees a new one reloads itself. */
   buildId: string
+  /** Time worked in each ticket's chat, and how much of it is not yet logged on the board. */
+  time: Record<string, ChatTime>
+  launched: Launched
+}
+
+export type ChatTime = { activeMs: number; unloggedMs: number }
+
+/** Ticket sessions a chat started through the API; the page opens a tab for each new batch. */
+export type Launched = { seq: number; keys: string[] }
+
+/** One ticket and the command its next step runs, as the API lists it for a chat to choose from. */
+export type NextStep = {
+  id: number
+  title: string
+  column: string
+  stage: string
+  command: string
+  isRunning: boolean
+  isOffSprint: boolean
+}
+
+/** One entry of a chat's conversation, as the chat view shows it. */
+export type ChatItem =
+  | { kind: 'user'; id: string; at?: string; text: string }
+  | { kind: 'assistant'; id: string; at?: string; text: string }
+  | { kind: 'tool'; id: string; at?: string; name: string; summary: string; isBackground?: boolean }
+  | { kind: 'result'; id: string; toolUseId: string; text: string; isError?: boolean }
+  | { kind: 'notice'; id: string; at?: string; text: string }
+
+/** A slice of a chat's conversation: what was written from byte `from` up to `next`. */
+export type ChatPage = {
+  items: ChatItem[]
+  /** Where to ask from next time. */
+  next: number
+  /** True when older conversation was left out of the first read. */
+  isCut: boolean
+  /** False when the chat has no conversation saved yet. */
+  hasTranscript: boolean
 }

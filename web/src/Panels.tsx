@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { reviewThreads } from '../../shared/model'
 import type { HealthCheck, LogEntry, NewProject, Pin, ProjectSummary, ReviewPr, Settings, Story, TerminalInfo, WorkflowChoice } from '../../shared/types'
 import { api, clearPageErrors, onPageError, pageErrors } from './api'
+import { ask } from './Dialog'
 
 export type InboxItem = { key: string; title: string; reason: string; tone: 'pink' | 'yellow' | 'red' }
 
@@ -319,7 +320,13 @@ export function Reviews(props: {
             </button>
             <button
               className="tool"
-              onClick={() => confirm('Post every drafted review that is waiting?') && props.onSend('post all')}
+              onClick={async () =>
+                (await ask({
+                  title: 'Post every waiting review?',
+                  body: 'Each drafted review goes up on its PR, where its author and the other reviewers see it.',
+                  confirm: 'Post all',
+                })) && props.onSend('post all')
+              }
             >
               Post all
             </button>
@@ -364,7 +371,13 @@ export function Reviews(props: {
             <button
               className="tool"
               disabled={!isReviewerUp}
-              onClick={() => confirm(`Post the drafted review of PR ${pr.id}?`) && props.onSend(`post ${pr.id}`)}
+              onClick={async () =>
+                (await ask({
+                  title: `Post the review of PR ${pr.id}?`,
+                  body: 'The drafted review goes up on the PR, where its author and the other reviewers see it.',
+                  confirm: 'Post review',
+                })) && props.onSend(`post ${pr.id}`)
+              }
             >
               Post
             </button>

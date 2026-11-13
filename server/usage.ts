@@ -32,7 +32,8 @@ function reindex() {
   indexedAt = Date.now()
 }
 
-function locate(sessionId: string): string | undefined {
+/** The transcript file of a Claude session, if Claude has written one. */
+export function locate(sessionId: string): string | undefined {
   const known = index.get(sessionId)
   if (known) return known
   // A session nobody has written yet stays unknown until the next index, not a rescan per ask.
@@ -66,6 +67,9 @@ type Tally = {
   tasks: Map<string, BgTask>
   /** A task id from its start, mapped to the tool call, so a completion notice finds its task. */
   taskIds: Map<string, string>
+  /** Time spent in the chat, and the time of its last line. */
+  activeMs: number
+  lastLineAt: number
 }
 
 const tallies = new Map<string, Tally>()
@@ -78,10 +82,27 @@ const fresh = (): Tally => ({
   dayStart: new Date().setHours(0, 0, 0, 0),
   tasks: new Map(),
   taskIds: new Map(),
+  activeMs: 0,
+  lastLineAt: 0,
 })
 
+// A pause longer than this between two lines of a chat is a break, not work, so it is not counted.
+const BREAK_MS = 5 * 60_000
+
+/** Adds the gap since the chat's previous line, when it is short enough to be one stretch of work. */
+function clock(tally: Tally, raw: string) {
+  const stamp = /"timestamp":"([^"]+)"/.exec(raw)?.[1]
+  const at = stamp ? Date.parse(stamp) : NaN
+  if (!Number.isFinite(at)) return
+  const gap = at - tally.lastLineAt
+  if (tally.lastLineAt > 0 && gap > 0 && gap <= BREAK_MS) tally.activeMs += gap
+  if (at > tally.lastLineAt) tally.lastLineAt = at
+}
+
 function count(tally: Tally, raw: string) {
-  if (raw.includes('run_in_background') || raw.includes('backgroundTaskId') || raw.includes('task-notification') || raw.includes('TaskStop')) track(tally, raw)
+  clock(tally, raw)
+  // A cheap test before parsing: only these lines start, name, resume, stop or finish background work.
+  if (/run_in_background|backgroundTaskId|agentId|task-notification|TaskStop|SendMessage/.test(raw)) track(tally, raw)
   if (!raw.includes('"usage"')) return
   let line: Line
   try {
@@ -110,7 +131,7 @@ function count(tally: Tally, raw: string) {
   if (line.timestamp) usage.lastAt = line.timestamp
 }
 
-type ToolUse = { type?: string; id?: string; name?: string; input?: { run_in_background?: boolean; description?: string; command?: string; prompt?: string; task_id?: string } }
+type ToolUse = { type?: string; id?: string; name?: string; input?: { run_in_background?: boolean; description?: string; command?: string; prompt?: string; task_id?: string; to?: string } }
 type ToolResult = { type?: string; tool_use_id?: string; content?: unknown }
 type TaskLine = {
   type?: string
@@ -167,6 +188,16 @@ function track(tally: Tally, raw: string) {
         stopped.endedAt = line.timestamp
       }
     }
+    // Messaging a finished or interrupted agent sets it working again, under the same agent id.
+    if (block.type === 'tool_use' && block.name === 'SendMessage' && block.input?.to) {
+      const resumed = tally.tasks.get(tally.taskIds.get(block.input.to) ?? '')
+      if (resumed) {
+        resumed.status = 'running'
+        resumed.resumedAt = line.timestamp
+        resumed.endedAt = undefined
+        resumed.summary = undefined
+      }
+    }
     if (block.type === 'tool_result' && block.tool_use_id) {
       const task = tally.tasks.get(block.tool_use_id)
       const id = line.toolUseResult?.backgroundTaskId ?? line.toolUseResult?.agentId
@@ -179,8 +210,9 @@ function track(tally: Tally, raw: string) {
   // A notice can sit in a queue record or an attachment; its text is the same either way.
   const text = raw.includes('task-notification') ? noticeIn(line) : undefined
   if (!text) return
-  const toolUse = tag(text, 'tool-use-id') ?? tally.taskIds.get(tag(text, 'task-id') ?? '')
-  const task = toolUse ? tally.tasks.get(toolUse) : undefined
+  // A resumed agent's notice names the SendMessage call, not the call that started it, so the agent id
+  // is the fallback.
+  const task = tally.tasks.get(tag(text, 'tool-use-id') ?? '') ?? tally.tasks.get(tally.taskIds.get(tag(text, 'task-id') ?? '') ?? '')
   if (!task) return
   task.status = tag(text, 'status') ?? task.status
   task.summary = tag(text, 'summary') ?? task.summary
@@ -226,6 +258,9 @@ function tallyOf(sessionId: string): Tally | undefined {
 
   return tally
 }
+
+/** Time worked in one Claude Code session: the gaps between its lines, leaving out breaks. */
+export const sessionActiveMs = (sessionId: string): number => tallyOf(sessionId)?.activeMs ?? 0
 
 /** Token usage of one Claude Code session, read from its transcript as it grows. */
 export const sessionUsage = (sessionId: string): TokenUsage | undefined => tallyOf(sessionId)?.usage
