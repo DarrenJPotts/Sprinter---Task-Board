@@ -38,6 +38,53 @@ async function trackerCheck(config: ProjectConfig): Promise<HealthCheck> {
   }
 }
 
+const isWindows = process.platform === 'win32'
+// Claude Code's own installer; it keeps itself up to date.
+const CLAUDE_INSTALL = isWindows ? 'irm https://claude.ai/install.ps1 | iex' : 'curl -fsSL https://claude.ai/install.sh | bash'
+
+/**
+ * What this machine needs before any project exists: git and Claude Code, and the sign-in tool for each kind
+ * of board. The installed app brings its own Node, so Node is only checked when running from source.
+ */
+export async function checkMachine(): Promise<HealthCheck[]> {
+  const [git, claude, az, gh] = await Promise.all([
+    run('git', ['--version']),
+    run('claude', ['--version']),
+    run('az', ['--version']),
+    run('gh', ['--version']),
+  ])
+  const major = Number(process.versions.node.split('.')[0])
+  const hasToken = Boolean(process.env.GH_TOKEN || process.env.GITHUB_TOKEN)
+
+  return [
+    ...(process.versions.electron
+      ? []
+      : [{ name: 'Node.js 20 or later', isOk: major >= 20, detail: `v${process.versions.node}`, fix: 'Install Node.js 20+ from nodejs.org' }]),
+    { name: 'git', isOk: git.ok, detail: git.ok ? git.out : 'not found', fix: isWindows ? 'winget install Git.Git' : 'Install git from git-scm.com' },
+    {
+      name: 'Claude Code',
+      isOk: claude.ok,
+      detail: claude.ok ? claude.out : 'not found',
+      // Just the command, so Copy pastes something that runs; signing in is the guide's next step.
+      fix: CLAUDE_INSTALL,
+    },
+    {
+      name: 'Azure CLI, for Azure DevOps boards',
+      isOk: az.ok,
+      detail: az.ok ? az.out.replace(/\s+/g, ' ') : 'not found',
+      fix: isWindows ? 'winget install Microsoft.AzureCLI' : 'Install from learn.microsoft.com/cli/azure',
+      isOptional: true,
+    },
+    {
+      name: 'GitHub CLI or token, for GitHub boards',
+      isOk: gh.ok || hasToken,
+      detail: hasToken ? 'GH_TOKEN is set' : gh.ok ? gh.out : 'not found',
+      fix: isWindows ? 'winget install GitHub.cli' : 'Install from cli.github.com',
+      isOptional: true,
+    },
+  ]
+}
+
 /** Everything a project's board and terminals need on this machine, each with the command that fixes it. */
 export async function checkHealth(config: ProjectConfig): Promise<HealthCheck[]> {
   const major = Number(process.versions.node.split('.')[0])
@@ -57,7 +104,7 @@ export async function checkHealth(config: ProjectConfig): Promise<HealthCheck[]>
       name: 'Claude Code',
       isOk: claude.ok,
       detail: claude.ok ? claude.out : `"${config.claudeCommand}" did not run`,
-      fix: 'npm install -g @anthropic-ai/claude-code',
+      fix: CLAUDE_INSTALL,
     },
     tracker,
     { name: 'Repo folder', isOk: isRepo, detail: config.repoPath || 'not set', fix: 'Set the repo folder in Settings below' },

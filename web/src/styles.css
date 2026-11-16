@@ -585,3 +585,55 @@ html, body { overflow: hidden; }
 .pane-tools { width: 100%; }
 .pane-tools .view-switch { margin-left: 0; margin-right: auto; }
 .pane-tools > .pane-icon:first-of-type { margin-left: auto; }
+
+/* A question Claude is waiting on, answered from the chat view: its options as buttons. */
+.chat-choice { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--c-yellow); color: #000; border: var(--b) solid #000; border-radius: var(--radius); }
+.chat-choice-head { display: flex; align-items: flex-start; gap: 10px; }
+.chat-choice-head strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.chat-choice-terminal { flex: 0 0 auto; padding: 0; font: inherit; font-size: 12px; font-weight: 700; color: #000; background: none; border: 0; text-decoration: underline; cursor: pointer; }
+.chat-choice-options { display: flex; flex-direction: column; gap: 6px; }
+.chat-choice-options .tool { justify-content: flex-start; text-align: left; white-space: normal; background: #fff; color: #000; border-color: #000; box-shadow: 2px 2px 0 #000; }
+.chat-choice-options .tool.primary { background: #000; color: #fff; }
+.chat-choice-n { display: inline-grid; place-items: center; min-width: 20px; height: 20px; margin-right: 6px; font-size: 11px; border: var(--b) solid currentColor; border-radius: 999px; }
+.chat-choice .count { color: rgba(0, 0, 0, 0.7); }
+
+/* The first-run guide: numbered steps, a live check of this machine, commands with a Copy button. */
+.guide { display: flex; flex-direction: column; gap: 18px; max-width: 860px; }
+.guide-intro { margin: 0; font-size: 15px; color: var(--ink-2); font-weight: 600; }
+.guide-step { padding: 16px 18px; background: var(--surface); border: var(--b-thick) solid var(--edge); border-radius: var(--radius); box-shadow: var(--lift) var(--lift) 0 var(--shadow); }
+.guide-step h2 { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; font-size: 18px; }
+.guide-n { display: inline-grid; place-items: center; width: 28px; height: 28px; background: var(--c-yellow); color: #000; border: var(--b) solid #000; border-radius: 50%; font-size: 14px; }
+.guide-recheck { margin-left: auto; padding: 3px 10px; font-size: 13px; }
+.guide-list { margin: 0 0 12px; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; line-height: 1.5; }
+.guide code { font-family: var(--mono); font-size: 12px; }
+.guide-command { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; vertical-align: middle; margin: 2px 0; }
+.guide-command code { padding: 2px 8px; background: var(--term-bg); color: #ececec; border-radius: 4px; overflow-x: auto; white-space: nowrap; }
+.guide-command .tool { padding: 1px 8px; font-size: 12px; }
+.checks li.optional { color: var(--ink-2); }
+.checks li.optional .mark { background: var(--c-gray); color: #000; }
+
+/* Chat view: a message's time and Copy on hover, Copy on code blocks, a sent message shown at once,
+   the working line, and one-click suggestions above the message box. */
+.chat-user, .chat-assistant { position: relative; }
+.chat-meta { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; font-size: 11px; font-weight: 700; color: var(--ink-2); opacity: 0; transition: opacity 120ms; }
+.chat-user .chat-meta { color: rgba(0, 0, 0, 0.6); }
+.chat-user:hover .chat-meta, .chat-assistant:hover .chat-meta, .chat-meta:focus-within, .chat-meta.always { opacity: 1; }
+.chat-meta button { padding: 0; font: inherit; color: inherit; background: none; border: 0; text-decoration: underline; cursor: pointer; }
+.chat-user.pending { opacity: 0.65; border-style: dashed; }
+.md pre { position: relative; }
+.md pre .copy-code {
+  position: absolute; top: 6px; right: 6px; padding: 1px 8px; font: 700 11px var(--font); color: #000; background: #fff;
+  border: var(--b) solid #000; border-radius: 4px; cursor: pointer; opacity: 0; transition: opacity 120ms;
+}
+.md pre:hover .copy-code, .md pre .copy-code:focus-visible { opacity: 1; }
+.chat-working { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.chat-working > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-working-step { color: var(--ink-2); font-weight: 600; }
+.chat-suggestions { display: flex; flex-wrap: wrap; gap: 6px; }
+.chat-suggestion {
+  max-width: 100%; padding: 3px 10px; font: 700 12px var(--font); color: var(--ink); background: var(--bg);
+  border: var(--b) dashed var(--edge); border-radius: 999px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chat-suggestion:hover { border-style: solid; background: var(--c-yellow); color: #000; }
+.chat-suggestion code { font-family: var(--mono); }
+@media (hover: none) { .chat-meta, .md pre .copy-code { opacity: 1; } }

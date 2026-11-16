@@ -8,6 +8,8 @@ import type { BgTask, ChatTime, Pin, Prefs, ProjectSummary, Snapshot, Story, Ter
 import { api, setProject } from './api'
 import { Card, Tag, itemRef } from './Card'
 import { DialogHost, ask } from './Dialog'
+import { useKeepOnScreen } from './onScreen'
+import { SetupGuide } from './SetupGuide'
 import { AddPin, DebugLog, Inbox, NewProjectForm, Reviews, Setup, inboxItems, useSetupProblems } from './Panels'
 import { activate, addTabs, allTabs, closeTab as closeIn, emptyPane, moveTab, openTab as openIn, panes, setRatio, zoneAt } from './layout'
 import type { LayoutNode, PaneNode, SplitNode, Zone } from './layout'
@@ -505,6 +507,9 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
             isLive={live.has(current!)}
             state={snap?.terminals.find(t => t.key === current)?.state}
             onSend={text => api.sendLine(current!, text)}
+            prompt={snap?.terminals.find(t => t.key === current)?.prompt}
+            suggestions={story ? [rules.nextCommand(story, hints[story.id])] : undefined}
+            onChoose={(index, text) => api.choose(current!, index, text)}
             onEscape={() => void run(api.sendEscape(current!))}
             onResume={resumable.has(current!) ? () => resume(current!) : undefined}
             onShowTerminal={() => setChatViews(chatViews.filter(k => k !== current))}
@@ -1065,6 +1070,7 @@ function TicketMenu({ items }: { items: (MenuItem | false | '' | undefined)[] })
   const [isOpen, setIsOpen] = useState(false)
   const host = useRef<HTMLDivElement>(null)
   useDismiss(host, isOpen, () => setIsOpen(false))
+  useKeepOnScreen(host, isOpen)
   const shown = items.filter((item): item is MenuItem => Boolean(item))
   if (shown.length === 0) return null
 
@@ -1123,6 +1129,7 @@ function tabGroups(tabs: string[], stories: Map<string, Story>, pins: Pin[], rul
 function PopHost({ isOpen, onClose, button, children }: { isOpen: boolean; onClose: () => void; button: React.ReactNode; children: React.ReactNode }) {
   const host = useRef<HTMLDivElement>(null)
   useDismiss(host, isOpen, onClose)
+  useKeepOnScreen(host, isOpen)
   const [place, setPlace] = useState<{ side: 'left' | 'right'; room: number }>({ side: 'right', room: 640 })
 
   useLayoutEffect(() => {
@@ -1162,9 +1169,12 @@ function legacyLayout(): LayoutNode | null {
 /** The ▾ beside the title: every project, and a way to add one. */
 function ProjectSwitcher(props: { current: string; name: string; projects: ProjectSummary[]; onSwitch: (id: string) => void; onNew: () => void }) {
   const [isOpen, setIsOpen] = useState(false)
+  const host = useRef<HTMLDivElement>(null)
+  useDismiss(host, isOpen, () => setIsOpen(false))
+  useKeepOnScreen(host, isOpen)
 
   return (
-    <div className="pop-host project-switch">
+    <div className="pop-host project-switch" ref={host}>
       <button className="tool" onClick={() => setIsOpen(!isOpen)} title="Switch project">
         📁 {props.name} ▾
       </button>
@@ -1246,13 +1256,20 @@ export function App() {
       <div className="main">
         <div className="page-head">
           <h1 className="page-title">{project === null ? 'Welcome to Sprinter' : 'New project'}</h1>
-          <NewProjectForm
-            onCreated={created => {
-              setIsNewOpen(false)
-              choose(created.id)
-            }}
-            onCancel={project === null ? undefined : () => setIsNewOpen(false)}
-          />
+          {project === null ? (
+            // A first run: the whole guide, with the project form as its third step.
+            <SetupGuide>
+              <NewProjectForm onCreated={created => choose(created.id)} />
+            </SetupGuide>
+          ) : (
+            <NewProjectForm
+              onCreated={created => {
+                setIsNewOpen(false)
+                choose(created.id)
+              }}
+              onCancel={() => setIsNewOpen(false)}
+            />
+          )}
         </div>
       </div>
     )

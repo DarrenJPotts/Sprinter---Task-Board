@@ -70,6 +70,8 @@ export const api = {
   logTime: (key: string, taskId: number, hours: number) =>
     call(`/api/time/${key}/log`, { method: 'POST', body: JSON.stringify({ taskId, hours }) }),
   clearTime: (key: string) => call(`/api/time/${key}/clear`, { method: 'POST' }),
+  choose: (key: string, index: number, text?: string) =>
+    call(`/api/terminals/${key}/choose`, { method: 'POST', body: JSON.stringify({ index, text }) }),
   chat: (key: string, from: number) => call<ChatPage>(`/api/chat/${encodeURIComponent(key)}${from >= 0 ? `?from=${from}` : ''}`),
   taskOutput: (file: string) => call<{ text: string; isCut: boolean; size: number }>(`/api/task-output?file=${encodeURIComponent(file)}`),
   openPin: (key: string) => call(`/api/pins/${key}`, { method: 'POST' }),
@@ -77,6 +79,7 @@ export const api = {
   sendLine: (key: string, text: string) => call(`/api/terminals/${key}/line`, { method: 'POST', body: JSON.stringify({ text }) }),
   removeWorktree: (key: string) => call(`/api/worktrees/${key}`, { method: 'DELETE' }),
   health: () => call<HealthCheck[]>('/api/health'),
+  machine: () => call<HealthCheck[]>('/api/machine'),
   projects: () => call<{ active: string | null; projects: ProjectSummary[] }>('/api/projects'),
   createProject: (input: NewProject) => call<ProjectSummary>('/api/projects', { method: 'POST', body: JSON.stringify(input) }),
   setActiveProject: (id: string) => call<{ active: string }>('/api/projects/active', { method: 'PUT', body: JSON.stringify({ id }) }),

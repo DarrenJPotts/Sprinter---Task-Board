@@ -83,6 +83,18 @@ export type TerminalInfo = {
   state: TerminalState
   /** Claude is asking something, or has finished its turn since you last typed. */
   needsYou: boolean
+  /** The choice Claude is waiting on, when it is asking one. */
+  prompt?: ChatPrompt
+}
+
+/** A question Claude Code shows with numbered options, as read off its screen. */
+export type ChatPrompt = {
+  question: string
+  options: string[]
+  /** The option the cursor is on now. */
+  selected: number
+  /** The option that takes your own words ("Type something."), if there is one. */
+  typed?: number
 }
 
 /** Tokens a ticket's Claude session has used, from its transcript. */
@@ -128,7 +140,15 @@ export type SessionInfo = {
 /** One failure for the debug log: from the server, or from the page's own calls. */
 export type LogEntry = { at: number; side: 'server' | 'page'; source: string; message: string }
 
-export type HealthCheck = { name: string; isOk: boolean; detail: string; fix?: string }
+export type HealthCheck = {
+  name: string
+  isOk: boolean
+  detail: string
+  /** The command or step that fixes it. */
+  fix?: string
+  /** Needed only for some projects (a tracker's CLI), so a miss is not a problem on its own. */
+  isOptional?: boolean
+}
 
 /**
  * A pinned chat: a named Claude terminal at the repo root, opened from the pin bar.

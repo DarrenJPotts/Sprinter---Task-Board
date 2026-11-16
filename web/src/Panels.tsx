@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { reviewThreads } from '../../shared/model'
 import type { HealthCheck, LogEntry, NewProject, Pin, ProjectSummary, ReviewPr, Settings, Story, TerminalInfo, WorkflowChoice } from '../../shared/types'
 import { api, clearPageErrors, onPageError, pageErrors } from './api'
+import { useKeepOnScreen } from './onScreen'
 import { ask } from './Dialog'
 
 export type InboxItem = { key: string; title: string; reason: string; tone: 'pink' | 'yellow' | 'red' }
@@ -211,9 +212,11 @@ export function DebugLog() {
   }, [])
 
   const entries = [...server, ...pageErrors()].sort((a, b) => b.at - a.at)
+  const host = useRef<HTMLDivElement>(null)
+  useKeepOnScreen(host, isOpen)
 
   return (
-    <div className="pop-host">
+    <div className="pop-host" ref={host}>
       <button className={`tool${entries.length > 0 ? ' alert' : ''}`} onClick={() => setIsOpen(!isOpen)}>
         🐞 Debug {entries.length > 0 && <span className="badge">{entries.length}</span>}
       </button>

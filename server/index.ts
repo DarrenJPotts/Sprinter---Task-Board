@@ -11,7 +11,7 @@ import { makeRules } from '../shared/workflow.js'
 import type { BgTask, ChatTime, Launched, NewProject, NextStep, Pin, Prefs, SessionInfo, Settings, Snapshot, TokenUsage } from '../shared/types.js'
 import { followChat, readChat } from './chat.js'
 import { addCompletedWork, nodeIo } from './ado.js'
-import { checkHealth } from './health.js'
+import { checkHealth, checkMachine } from './health.js'
 import { clearServerLog, logError, serverLog } from './log.js'
 import type { Project } from './projects.js'
 import { allProjects, app as appConfig, createProject, getProject, refresh, removeProject, saveConfig, saveState, setActive, summary, workflowOf } from './projects.js'
@@ -24,6 +24,7 @@ import {
   openTerminal,
   removeWorktree,
   scrollbackKeys,
+  choose,
   sendEscape,
   sendLine,
   worktreeKeys,
@@ -218,6 +219,11 @@ app.delete('/api/projects/:id', (req, res) => {
   }
 })
 
+// The machine's tools, before any project exists: the first-run guide reads this.
+app.get('/api/machine', async (_req, res) => {
+  res.json(await checkMachine())
+})
+
 // --- Everything else is for one project: the page names it in a header ---------
 
 type ProjectRequest = express.Request & { project?: Project }
@@ -314,6 +320,18 @@ app.post('/api/sessions/start', async (req, res) => {
     launched.set(p.config.id, { seq: last + 1, keys: started.map(s => s.id) })
   }
   res.json({ started, skipped })
+})
+
+// Answers the choice Claude is showing in a chat: option `index` (from 0), as if picked in its terminal.
+app.post('/api/terminals/:key/choose', (req, res) => {
+  const p = projectOf(req)
+  try {
+    const body = (req.body ?? {}) as { index?: number; text?: string }
+    choose(p, req.params.key, Number(body.index), body.text)
+    res.json(snapshot(p))
+  } catch (caught) {
+    res.status(409).json({ message: message(caught) })
+  }
 })
 
 app.post('/api/terminals/:key/escape', (req, res) => {

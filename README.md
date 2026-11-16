@@ -30,6 +30,9 @@ Each project is one repo plus its tracker. Switch with the 📁 button beside th
 
 ## Install
 
+New machine? [SETUP.md](SETUP.md) walks through everything from install to a working board, and the app shows
+the same steps on its first run.
+
 Download the latest Windows build from [Releases](https://github.com/DarrenJPotts/Sprinter---Task-Board/releases):
 
 - `Sprinter-Setup-<version>.exe` installs it for your user, with a Start menu entry.

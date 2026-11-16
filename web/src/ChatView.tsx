@@ -2,7 +2,7 @@ import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { type ReactNode, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import type { ChatItem, ChatPage, TerminalState } from '../../shared/types'
+import type { ChatItem, ChatPage, TerminalState, ChatPrompt } from '../../shared/types'
 import { projectId } from './api'
 
 type Tool = Extract<ChatItem, { kind: 'tool' }>
@@ -22,8 +22,59 @@ const cache = new Map<string, Cached>()
 // Transcripts carry text from PRs, files and web pages: it is rendered as markdown but never trusted as HTML.
 const Markdown = memo(function Markdown({ text }: { text: string }) {
   const html = useMemo(() => DOMPurify.sanitize(marked.parse(text, { gfm: true, async: false })), [text])
-  return <div className="md" dangerouslySetInnerHTML={{ __html: html }} />
+  const box = useRef<HTMLDivElement>(null)
+  // Every code block gets a Copy button, added to the rendered page rather than the sanitised HTML.
+  useLayoutEffect(() => {
+    for (const pre of box.current?.querySelectorAll('pre') ?? []) {
+      if (pre.querySelector('.copy-code')) continue
+      const button = document.createElement('button')
+      button.className = 'copy-code'
+      button.type = 'button'
+      button.textContent = 'Copy'
+      button.onclick = event => {
+        event.stopPropagation()
+        void navigator.clipboard?.writeText(pre.querySelector('code')?.textContent ?? pre.textContent ?? '').then(() => {
+          button.textContent = 'Copied'
+          setTimeout(() => (button.textContent = 'Copy'), 1500)
+        })
+      }
+      pre.append(button)
+    }
+  }, [html])
+  return <div ref={box} className="md" dangerouslySetInnerHTML={{ __html: html }} />
 })
+
+/** A message's time, and a button that copies its text: shown on hover. */
+function MessageMeta({ at, text }: { at?: string; text: string }) {
+  const [isCopied, setIsCopied] = useState(false)
+  return (
+    <div className="chat-meta">
+      {at && <time dateTime={at}>{new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>}
+      <button
+        type="button"
+        onClick={() =>
+          void navigator.clipboard?.writeText(text).then(() => {
+            setIsCopied(true)
+            setTimeout(() => setIsCopied(false), 1500)
+          })
+        }
+      >
+        {isCopied ? 'Copied' : 'Copy'}
+      </button>
+    </div>
+  )
+}
+
+// What you were typing in each chat, and what you sent there: kept while the app is open, so switching
+// tabs keeps a half-written message and ↑ brings back an earlier one.
+const drafts = new Map<string, string>()
+const history = new Map<string, string[]>()
+
+const since = (iso: string | undefined, now: number) => {
+  if (!iso) return ''
+  const seconds = Math.max(0, Math.round((now - Date.parse(iso)) / 1000))
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`
+}
 
 /** Tool calls in a row fold into one line; the results are matched to their calls by id. */
 function entriesOf(items: ChatItem[]): Entry[] {
@@ -94,20 +145,50 @@ type Composer = {
   onShowTerminal: () => void
   /** Sits beside the send button: the pane's Tasks button. */
   tools?: ReactNode
+  /** The choice Claude is waiting on, read off its screen, and how to answer it. */
+  prompt?: ChatPrompt
+  onChoose?: (index: number, text?: string) => Promise<unknown>
+  /** Commands worth one click, such as the ticket's next step: a click puts one in the box. */
+  suggestions?: string[]
 }
 
 /** The box under the conversation: what is typed goes to the chat's terminal, as if typed there. */
-function Composer({ termKey, isLive, state, onSend, onEscape, onResume, onShowTerminal, tools, onSent }: Composer & { termKey: string; onSent: () => void }) {
-  const [draft, setDraft] = useState('')
+function Composer({ termKey, isLive, state, onSend, onEscape, onResume, onShowTerminal, tools, onSent, prompt, onChoose, suggestions }: Composer & { termKey: string; onSent: (text?: string) => void }) {
+  const [draft, setDraftState] = useState(() => drafts.get(termKey) ?? '')
+  const setDraft = (text: string) => {
+    drafts.set(termKey, text)
+    setDraftState(text)
+  }
+  // Where ↑ and ↓ are in this chat's sent messages; -1 is the message being written.
+  const recall = useRef(-1)
   const [isSending, setIsSending] = useState(false)
   const [error, setError] = useState('')
   const input = useRef<HTMLTextAreaElement>(null)
   // A question on screen (a permission prompt, a choice) reads keys, not a message: typing into it could pick an option.
   const isAsking = state === 'asking'
+  // When the question's options can be read, they are answered here; otherwise only in the terminal.
+  const choice = isAsking && onChoose ? prompt : undefined
+  // "Type something." turns the message box into the answer box.
+  const isTypedAnswer = choice?.typed !== undefined
+  const pick = async (index: number, text?: string) => {
+    if (!onChoose || isSending) return
+    setIsSending(true)
+    setError('')
+    try {
+      await onChoose(index, text)
+      setDraft('')
+      onSent()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught))
+    } finally {
+      setIsSending(false)
+    }
+  }
 
   useEffect(() => {
-    setDraft('')
+    setDraftState(drafts.get(termKey) ?? '')
     setError('')
+    recall.current = -1
   }, [termKey])
 
   // The box grows with what is typed, up to a limit, then scrolls.
@@ -120,13 +201,16 @@ function Composer({ termKey, isLive, state, onSend, onEscape, onResume, onShowTe
 
   const send = async () => {
     const text = draft.trim()
+    if (isTypedAnswer && text) return pick(choice!.typed!, text)
     if (!text || isSending || !isLive || isAsking) return
     setIsSending(true)
     setError('')
     try {
       await onSend(text)
       setDraft('')
-      onSent()
+      history.set(termKey, [...(history.get(termKey) ?? []).filter(old => old !== text), text].slice(-50))
+      recall.current = -1
+      onSent(text)
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught))
     } finally {
@@ -151,7 +235,33 @@ function Composer({ termKey, isLive, state, onSend, onEscape, onResume, onShowTe
 
   return (
     <div className="chat-composer">
-      {isAsking && (
+      {choice && (
+        <div className="chat-choice" role="group" aria-label={choice.question || 'Claude is asking'}>
+          <div className="chat-choice-head">
+            <strong>{choice.question || 'Claude is asking:'}</strong>
+            <button className="chat-choice-terminal" onClick={onShowTerminal} title="Answer in the terminal instead">
+              Terminal ↗
+            </button>
+          </div>
+          <div className="chat-choice-options">
+            {choice.options.map((option, index) =>
+              index === choice.typed ? null : (
+                <button
+                  key={option + index}
+                  className={`tool${index === choice.selected ? ' primary' : ''}`}
+                  disabled={isSending}
+                  onClick={() => void pick(index)}
+                  title={index === choice.selected ? 'Highlighted in the terminal now' : undefined}
+                >
+                  <span className="chat-choice-n">{index + 1}</span> {option}
+                </button>
+              ),
+            )}
+          </div>
+          {isTypedAnswer && <span className="count">Or type your own answer below.</span>}
+        </div>
+      )}
+      {isAsking && !choice && (
         <div className="chat-asking">
           <span>Claude is asking something. Answer it in the terminal.</span>
           <button className="tool primary" onClick={onShowTerminal}>
@@ -160,18 +270,51 @@ function Composer({ termKey, isLive, state, onSend, onEscape, onResume, onShowTe
         </div>
       )}
       {error && <div className="chat-error">{error}</div>}
+      {!isAsking && !draft && suggestions && suggestions.length > 0 && (
+        <div className="chat-suggestions">
+          {suggestions.map(command => (
+            <button
+              key={command}
+              type="button"
+              className="chat-suggestion"
+              title="Put this in the box; Enter sends it"
+              onClick={() => {
+                setDraft(command)
+                input.current?.focus()
+              }}
+            >
+              ▶ <code>{command}</code>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="chat-compose-row">
         <textarea
           ref={input}
           rows={1}
           value={draft}
-          placeholder={isAsking ? 'Waiting on the question in the terminal…' : 'Message Claude: Enter sends, Shift+Enter for a new line'}
-          disabled={isAsking}
+          placeholder={
+            isTypedAnswer ? 'Your own answer: Enter sends it' : isAsking ? 'Pick an answer above, or in the terminal' : 'Message Claude: Enter sends, Shift+Enter for a new line'
+          }
+          disabled={isAsking && !isTypedAnswer}
           onChange={event => setDraft(event.target.value)}
           onKeyDown={event => {
             if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault()
               void send()
+              return
+            }
+            // ↑ in an empty box (or one showing a recalled message) steps back through what was sent; ↓ forward.
+            const sent = history.get(termKey) ?? []
+            const isRecalling = recall.current >= 0 && draft === sent[sent.length - 1 - recall.current]
+            if (event.key === 'ArrowUp' && (draft === '' || isRecalling) && recall.current < sent.length - 1) {
+              event.preventDefault()
+              recall.current += 1
+              setDraft(sent[sent.length - 1 - recall.current]!)
+            } else if (event.key === 'ArrowDown' && isRecalling) {
+              event.preventDefault()
+              recall.current -= 1
+              setDraft(recall.current >= 0 ? sent[sent.length - 1 - recall.current]! : '')
             }
           }}
         />
@@ -180,7 +323,7 @@ function Composer({ termKey, isLive, state, onSend, onEscape, onResume, onShowTe
             ■ Esc
           </button>
         )}
-        <button className="tool primary" onClick={() => void send()} disabled={!draft.trim() || isSending || isAsking}>
+        <button className="tool primary" onClick={() => void send()} disabled={!draft.trim() || isSending || (isAsking && !isTypedAnswer)}>
           {isSending ? 'Sending…' : 'Send ↵'}
         </button>
         {tools}
@@ -198,6 +341,10 @@ export function ChatView({ termKey, ...composer }: { termKey: string } & Compose
   const [isAtBottom, setIsAtBottom] = useState(true)
   const box = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
+
+  // Messages sent from here, shown at once until the transcript has them.
+  const [pending, setPending] = useState<{ id: string; text: string; at: number }[]>([])
+  const [now, setNow] = useState(() => Date.now())
 
   const [limit, setLimit] = useState(PAGE)
   // Where the view stood before older entries were added above it, so it can stay on the same message.
@@ -252,6 +399,31 @@ export function ChatView({ termKey, ...composer }: { termKey: string } & Compose
   }, [termKey])
 
   const results = useMemo(() => new Map(items.filter((i): i is Result => i.kind === 'result').map(r => [r.toolUseId, r])), [items])
+
+  // A sent message leaves the pending list once the transcript shows it (or after a minute regardless).
+  useEffect(() => {
+    if (pending.length === 0) return
+    const users = items.filter(i => i.kind === 'user')
+    const left = pending.filter(
+      p => Date.now() - p.at < 60_000 && !users.some(u => u.kind === 'user' && Date.parse(u.at ?? '') >= p.at - 5_000 && u.text.includes(p.text.slice(0, 80))),
+    )
+    if (left.length !== pending.length) setPending(left)
+  }, [items, pending])
+  useEffect(() => setPending([]), [termKey])
+
+  // While Claude works, the line under the conversation counts up once a second.
+  const isWorking = composer.state === 'working'
+  useEffect(() => {
+    if (!isWorking) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [isWorking])
+  const lastUser = [...items].reverse().find(i => i.kind === 'user')
+  const lastTool = [...items].reverse().find((i): i is Tool => i.kind === 'tool')
+  const startedAt = pending.at(-1) ? new Date(pending.at(-1)!.at).toISOString() : lastUser?.at
+  // A chat that is just starting up (resumed, say) also draws a lot; then the last message is old and its
+  // time and step would mislead, so they show only for a turn begun in the last two hours.
+  const isRecentTurn = Boolean(startedAt) && now - Date.parse(startedAt!) < 2 * 60 * 60_000
   const entries = useMemo(() => entriesOf(items), [items])
   const shown = entries.length > limit ? entries.slice(-limit) : entries
 
@@ -321,12 +493,14 @@ export function ChatView({ termKey, ...composer }: { termKey: string } & Compose
             return (
               <div key={entry.id} className="chat-user">
                 <Markdown text={entry.text} />
+                <MessageMeta at={entry.at} text={entry.text} />
               </div>
             )
           if (entry.kind === 'assistant')
             return (
               <div key={entry.id} className="chat-assistant">
                 <Markdown text={entry.text} />
+                <MessageMeta at={entry.at} text={entry.text} />
               </div>
             )
           return (
@@ -335,12 +509,26 @@ export function ChatView({ termKey, ...composer }: { termKey: string } & Compose
             </div>
           )
         })}
-        {composer.state === 'working' && (
+        {pending.map(p => (
+          <div key={p.id} className="chat-user pending" title="Sent; it shows here for good once Claude has it">
+            <Markdown text={p.text} />
+            <div className="chat-meta always">sending…</div>
+          </div>
+        ))}
+        {isWorking && (
           // The conversation file gets a reply only once each part of it is finished, so a pause here
           // means Claude is still writing or running something, not that the view stalled.
           <div className="chat-working">
             <span className="chat-pulse" />
-            Claude is working…
+            <span>
+              Claude is working{isRecentTurn ? ` · ${since(startedAt, now)}` : ''}
+              {isRecentTurn && lastTool && Date.parse(lastTool.at ?? '') >= Date.parse(startedAt ?? '') && (
+                <span className="chat-working-step">
+                  {' '}
+                  · {lastTool.name.replace(/^mcp__[^_]+__/, '')} {lastTool.summary}
+                </span>
+              )}
+            </span>
           </div>
         )}
       </div>
@@ -351,7 +539,14 @@ export function ChatView({ termKey, ...composer }: { termKey: string } & Compose
         </button>
       )}
       </div>
-      <Composer termKey={termKey} {...composer} onSent={toBottom} />
+      <Composer
+        termKey={termKey}
+        {...composer}
+        onSent={text => {
+          if (text) setPending(list => [...list, { id: `p${Date.now()}`, text, at: Date.now() }])
+          toBottom()
+        }}
+      />
     </div>
   )
 }
