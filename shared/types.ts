@@ -85,7 +85,12 @@ export type TerminalInfo = {
   needsYou: boolean
   /** The choice Claude is waiting on, when it is asking one. */
   prompt?: ChatPrompt
+  /** Claude was typed in but has not drawn its screen yet: the terminal shows only the shell for now. */
+  isBooting?: boolean
 }
+
+/** Where a terminal that was asked for, and is not running yet, has got to. */
+export type OpeningPhase = 'queued' | 'worktree' | 'starting'
 
 /** A question Claude Code shows with numbered options, as read off its screen. */
 export type ChatPrompt = {
@@ -95,6 +100,12 @@ export type ChatPrompt = {
   selected: number
   /** The option that takes your own words ("Type something."), if there is one. */
   typed?: number
+  /** Each option's description, '' for none; absent when no option has one. */
+  details?: string[]
+  /** The box Claude shows beside the list for the highlighted option (AskUserQuestion's preview). */
+  preview?: string
+  /** The form's tab row when Claude asks several questions at once, e.g. "☒ D3 Scope   ☐ D4 Endings   ✔ Submit". */
+  header?: string
 }
 
 /** Tokens a ticket's Claude session has used, from its transcript. */
@@ -196,6 +207,8 @@ export type Settings = {
 }
 
 export type Snapshot = {
+  /** Terminals asked for and not running yet, by key. */
+  opening: Record<string, OpeningPhase>
   board: Board | null
   prefs: Prefs
   hints: Record<string, PlanHint>
@@ -247,6 +260,8 @@ export type NextStep = {
   stage: string
   command: string
   isRunning: boolean
+  /** It has a conversation from before, which a start with `resume` reopens. */
+  hasConversation: boolean
   isOffSprint: boolean
 }
 

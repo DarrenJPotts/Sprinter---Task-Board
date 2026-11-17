@@ -70,8 +70,8 @@ export const api = {
   logTime: (key: string, taskId: number, hours: number) =>
     call(`/api/time/${key}/log`, { method: 'POST', body: JSON.stringify({ taskId, hours }) }),
   clearTime: (key: string) => call(`/api/time/${key}/clear`, { method: 'POST' }),
-  choose: (key: string, index: number, text?: string) =>
-    call(`/api/terminals/${key}/choose`, { method: 'POST', body: JSON.stringify({ index, text }) }),
+  choose: (key: string, index: number, text?: string, isMoveOnly?: boolean) =>
+    call(`/api/terminals/${key}/choose`, { method: 'POST', body: JSON.stringify({ index, text, isMoveOnly }) }),
   chat: (key: string, from: number) => call<ChatPage>(`/api/chat/${encodeURIComponent(key)}${from >= 0 ? `?from=${from}` : ''}`),
   taskOutput: (file: string) => call<{ text: string; isCut: boolean; size: number }>(`/api/task-output?file=${encodeURIComponent(file)}`),
   openPin: (key: string) => call(`/api/pins/${key}`, { method: 'POST' }),

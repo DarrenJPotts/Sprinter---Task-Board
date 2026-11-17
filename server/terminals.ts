@@ -8,7 +8,7 @@ import pty from '@lydell/node-pty'
 import type { IPty } from '@lydell/node-pty'
 import type { WebSocket } from 'ws'
 
-import type { TerminalInfo } from '../shared/types.js'
+import type { OpeningPhase, TerminalInfo } from '../shared/types.js'
 import { plain, terminalState } from './attention.js'
 import type { Screen } from './prompt.js'
 import { newScreen, readPrompt, screenLines } from './prompt.js'
@@ -47,11 +47,38 @@ type Terminal = {
   /** Output not yet sent to the windows, and the timer that will send it. */
   pending: string
   flush: NodeJS.Timeout | null
+  /** When the chat view last moved a question's cursor without answering it. */
+  movedAt?: number
+  /** Claude has drawn its screen at least once since this terminal started. */
+  hasDrawn?: boolean
 }
+
+// Moving a question's cursor makes Claude repaint, which reads as work for a few seconds; the question is
+// still on screen, so for this long after a move it is read off the screen regardless.
+const MOVED_MS = 5_000
 
 // Keyed `<project>/<key>`: two projects may both have an issue 12.
 const terminals = new Map<string, Terminal>()
 const slot = (p: Project, key: string) => `${p.config.id}/${key}`
+
+// Terminals asked for and not running yet. Cutting a worktree can take a minute, with no terminal to show.
+const opening = new Map<string, OpeningPhase>()
+
+/** Marks terminals that will open one after another, so each shows as waiting until its turn. */
+export function queueOpen(p: Project, keys: string[]) {
+  for (const key of keys) if (!terminals.get(slot(p, key))?.isAlive) opening.set(slot(p, key), 'queued')
+}
+
+export function listOpening(p: Project): Record<string, OpeningPhase> {
+  const prefix = `${p.config.id}/`
+  return Object.fromEntries([...opening].filter(([at]) => at.startsWith(prefix)).map(([at, phase]) => [at.slice(prefix.length), phase]))
+}
+
+// Claude Code's own screen: its banner, its input box's rule, its footer or its trust question. Until one
+// shows, the terminal holds only the shell that Claude was typed into.
+const CLAUDE_UP = /Claude Code|for shortcuts|esc to interrupt|trust (this|the files)|─{20}/i
+// A Claude that has not drawn by now has likely failed to start; its terminal shows why.
+const BOOT_MS = 30_000
 
 const logDir = (p: Project) => join(p.config.dataDir, 'scrollback')
 const logPath = (p: Project, key: string) => join(logDir(p), `${key}.log`)
@@ -173,10 +200,15 @@ function broadcast(terminal: Terminal, message: object) {
 }
 
 function info(t: Terminal): TerminalInfo {
-  const { state, needsYou } = terminalState({ ...t, now: Date.now() })
-  const prompt = state === 'asking' ? readPrompt(screenLines(t.screen)) : undefined
+  let { state, needsYou } = terminalState({ ...t, now: Date.now() })
+  const isJustMoved = t.isAlive && t.movedAt !== undefined && Date.now() - t.movedAt < MOVED_MS
+  const prompt = state === 'asking' || isJustMoved ? readPrompt(screenLines(t.screen)) : undefined
+  if (prompt && isJustMoved) ({ state, needsYou } = { state: 'asking', needsYou: true })
 
-  return { key: t.key, isAlive: t.isAlive, cwd: t.cwd, startedAt: t.startedAt, state, needsYou, ...(prompt && { prompt }) }
+  if (t.isClaude && !t.hasDrawn && CLAUDE_UP.test(screenLines(t.screen).join('\n'))) t.hasDrawn = true
+  const isBooting = t.isAlive && t.isClaude && !t.hasDrawn && Date.now() - t.startedAt < BOOT_MS
+
+  return { key: t.key, isAlive: t.isAlive, cwd: t.cwd, startedAt: t.startedAt, state, needsYou, ...(prompt && { prompt }), ...(isBooting && { isBooting }) }
 }
 
 export function listTerminals(p: Project): TerminalInfo[] {
@@ -197,7 +229,14 @@ export async function openTerminal(
   const running = terminals.get(slot(p, key))
   if (running?.isAlive) return info(running)
 
-  const cwd = await workdir(p, key)
+  const at = slot(p, key)
+  opening.set(at, isTicketKey(key) && config.useWorktrees && !existsSync(worktreePath(p, key)) ? 'worktree' : 'starting')
+  let cwd: string
+  try {
+    cwd = await workdir(p, key)
+  } finally {
+    opening.delete(at)
+  }
   const shell = pty.spawn(config.shell, [], {
     name: 'xterm-256color',
     cols: 120,
@@ -339,21 +378,25 @@ export function sendLine(p: Project, key: string, text: string) {
  * Picks option `index` of the choice Claude is showing: arrow keys from where its cursor is, then Enter,
  * as pressing them in the terminal would. The screen is read again first, so a stale page cannot pick wrong.
  */
-export function choose(p: Project, key: string, index: number, text?: string) {
+export async function choose(p: Project, key: string, index: number, text?: string, isMoveOnly = false) {
   const terminal = terminals.get(slot(p, key))
   if (!terminal?.isAlive) throw new Error(`${key} is not running`)
   const prompt = readPrompt(screenLines(terminal.screen))
   if (!prompt) throw new Error('Claude is not showing a choice right now')
   if (!Number.isInteger(index) || index < 0 || index >= prompt.options.length) throw new Error(`There is no option ${index + 1}`)
   terminal.lastInputAt = Date.now()
+  // A move only highlights the option, so its preview shows; it is not an answer.
+  terminal.movedAt = isMoveOnly ? Date.now() : undefined
   // The arrow keys' code depends on the mode the program set, as it does for any terminal.
   const arrow = terminal.screen.modes.applicationCursorKeysMode ? '\x1bO' : '\x1b['
   const step = index > prompt.selected ? `${arrow}B` : `${arrow}A`
   // On "Type something." the words go in where the cursor is, then Enter sends them.
-  const words = text?.trim() && index === prompt.typed ? [text.trim()] : []
-  const keys = [...Array.from({ length: Math.abs(index - prompt.selected) }, () => step), ...words, '\r']
+  const words = text?.trim() && index === prompt.typed && !isMoveOnly ? [text.trim()] : []
+  const keys = [...Array.from({ length: Math.abs(index - prompt.selected) }, () => step), ...words, ...(isMoveOnly ? [] : ['\r'])]
   // One key at a time: a burst can be read as typed text rather than separate key presses.
   keys.forEach((k, at) => setTimeout(() => terminal.isAlive && terminal.pty.write(k), at * 60))
+  // A move waits for the repaint, so the answer carries the newly highlighted option and its preview.
+  if (isMoveOnly) await new Promise(resolve => setTimeout(resolve, keys.length * 60 + 250))
 }
 
 /** Esc to a Claude chat: it stops what Claude is doing, as pressing Esc in the terminal does. */

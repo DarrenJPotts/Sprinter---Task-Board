@@ -20,8 +20,10 @@ import {
   closeAll,
   closeTerminal,
   isTicketKey,
+  listOpening,
   listTerminals,
   openTerminal,
+  queueOpen,
   removeWorktree,
   scrollbackKeys,
   choose,
@@ -74,6 +76,7 @@ function nextSteps(p: Project): NextStep[] {
       stage: rules.stageGroup(story),
       command: rules.nextCommand(story, p.hints[story.id]),
       isRunning: running.has(String(story.id)),
+      hasConversation: Boolean(p.saved.sessions[String(story.id)] && hasTranscript(p.saved.sessions[String(story.id)]!)),
       isOffSprint: story.isOffSprint === true,
     }))
 }
@@ -124,6 +127,7 @@ const snapshot = (p: Project): Snapshot => ({
   prefs: p.saved.prefs,
   hints: p.hints,
   terminals: listTerminals(p),
+  opening: listOpening(p),
   usage: usageByKey(p),
   names: p.saved.names,
   sessions: sessionsOf(p),
@@ -279,12 +283,13 @@ app.get('/api/next', (req, res) => {
 })
 
 // Starts a Claude session for each ticket, each in its own terminal and worktree, with its next command
-// (or the one given). One already running is left alone. Open pages add a tab for every one started.
+// (or the one given). With `resume`, it reopens the ticket's conversation and sends nothing, like ⟳ Resume
+// chat. One already running is left alone. Open pages add a tab for every one started.
 app.post('/api/sessions/start', async (req, res) => {
   const p = projectOf(req)
-  const { items } = (req.body ?? {}) as { items?: { id?: number | string; command?: string }[] }
+  const { items } = (req.body ?? {}) as { items?: { id?: number | string; command?: string; resume?: boolean }[] }
   if (!Array.isArray(items) || items.length === 0) {
-    res.status(400).json({ message: 'Send items: [{ id, command? }]' })
+    res.status(400).json({ message: 'Send items: [{ id, command?, resume? }]' })
     return
   }
   if (items.length > 12) {
@@ -292,9 +297,9 @@ app.post('/api/sessions/start', async (req, res) => {
     return
   }
   const steps = new Map(nextSteps(p).map(step => [String(step.id), step]))
-  const started: { id: string; command: string }[] = []
+  const started: { id: string; command: string; isResumed?: boolean }[] = []
   const skipped: { id: string; why: string }[] = []
-  // One at a time: each may cut a git worktree, and git takes a lock on the repo for that.
+  const toOpen: { id: string; command: string; resume: boolean }[] = []
   for (const item of items) {
     const id = String(item.id ?? '')
     const step = steps.get(id)
@@ -306,28 +311,40 @@ app.post('/api/sessions/start', async (req, res) => {
       skipped.push({ id, why: 'its session is already running' })
       continue
     }
-    const command = item.command?.trim() || step.command
+    const known = p.saved.sessions[id]
+    // Resuming only reopens a conversation; one that never started would otherwise open as an idle new chat.
+    if (item.resume && !(known && hasTranscript(known, true))) {
+      skipped.push({ id, why: 'no conversation to resume; start it without resume to send its next command' })
+      continue
+    }
+    toOpen.push({ id, command: item.resume ? '' : item.command?.trim() || step.command, resume: item.resume === true })
+  }
+  // The tabs open now, not once every worktree is cut: each shows its progress while it waits.
+  queueOpen(p, toOpen.map(item => item.id))
+  if (toOpen.length > 0) {
+    const last = launched.get(p.config.id)?.seq ?? 0
+    launched.set(p.config.id, { seq: last + 1, keys: toOpen.map(item => item.id) })
+  }
+  // One at a time: each may cut a git worktree, and git takes a lock on the repo for that.
+  for (const { id, command, resume } of toOpen) {
     try {
-      await openTerminal(p, id, { prompt: command })
-      started.push({ id, command })
+      await openTerminal(p, id, resume ? {} : { prompt: command })
+      started.push(resume ? { id, command, isResumed: true } : { id, command })
     } catch (caught) {
       logError(`${p.config.id}: start ${id}`, caught)
       skipped.push({ id, why: message(caught) })
     }
   }
-  if (started.length > 0) {
-    const last = launched.get(p.config.id)?.seq ?? 0
-    launched.set(p.config.id, { seq: last + 1, keys: started.map(s => s.id) })
-  }
   res.json({ started, skipped })
 })
 
 // Answers the choice Claude is showing in a chat: option `index` (from 0), as if picked in its terminal.
-app.post('/api/terminals/:key/choose', (req, res) => {
+// With `isMoveOnly`, it only highlights that option, so the question's preview of it shows.
+app.post('/api/terminals/:key/choose', async (req, res) => {
   const p = projectOf(req)
   try {
-    const body = (req.body ?? {}) as { index?: number; text?: string }
-    choose(p, req.params.key, Number(body.index), body.text)
+    const body = (req.body ?? {}) as { index?: number; text?: string; isMoveOnly?: boolean }
+    await choose(p, req.params.key, Number(body.index), body.text, body.isMoveOnly === true)
     res.json(snapshot(p))
   } catch (caught) {
     res.status(409).json({ message: message(caught) })

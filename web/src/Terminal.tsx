@@ -1,8 +1,9 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as Xterm } from '@xterm/xterm'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { projectId } from './api'
+import { TermSkeleton } from './Skeleton'
 
 // Always dark, in either theme: a terminal reads best light-on-dark. The cursor and selection take the
 // board's yellow. Grey ("bright black") is what Claude Code uses for most secondary text, so it is set
@@ -36,9 +37,18 @@ const themeFor = (isDark: boolean) => ({
 // terminal has measured its cells, which spaces the letters out ("Cl aude"), so none is used.
 const FONT = "'Cascadia Mono', 'Cascadia Code', Consolas, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace"
 
-/** One ticket's live terminal, attached over a socket; switching `termKey` re-attaches. */
-export function Terminal({ termKey, isDark, onExit }: { termKey: string; isDark: boolean; onExit: () => void }) {
+// Claude Code's own screen, as the server reads it (CLAUDE_UP in terminals.ts): seen here, the skeleton goes
+// at once rather than at the next poll.
+const CLAUDE_UP = /Claude Code|for shortcuts|esc to interrupt|trust (this|the files)|─{20}/i
+
+/**
+ * One ticket's live terminal, attached over a socket; switching `termKey` re-attaches. While Claude is
+ * `isBooting` the shell it was typed into is covered by a placeholder, until Claude draws its own screen.
+ */
+export function Terminal({ termKey, isDark, isBooting = false, onExit }: { termKey: string; isDark: boolean; isBooting?: boolean; onExit: () => void }) {
   const host = useRef<HTMLDivElement>(null)
+  const [hasDrawn, setHasDrawn] = useState(false)
+  const [isUncovered, setIsUncovered] = useState(false)
   const termRef = useRef<Xterm | null>(null)
   const darkRef = useRef(isDark)
   darkRef.current = isDark
@@ -47,6 +57,8 @@ export function Terminal({ termKey, isDark, onExit }: { termKey: string; isDark:
 
   useEffect(() => {
     if (!host.current) return
+    setHasDrawn(false)
+    setIsUncovered(false)
     const term = new Xterm({
       fontFamily: FONT,
       fontSize: 14,
@@ -89,7 +101,11 @@ export function Terminal({ termKey, isDark, onExit }: { termKey: string; isDark:
         queued += message.data
         frame ??= requestAnimationFrame(() => {
           frame = null
-          term.write(queued)
+          term.write(queued, () => {
+            const buffer = term.buffer.active
+            const rows = Array.from({ length: term.rows }, (_, y) => buffer.getLine(buffer.viewportY + y)?.translateToString(true) ?? '')
+            if (CLAUDE_UP.test(rows.join('\n'))) setHasDrawn(true)
+          })
           queued = ''
         })
       }
@@ -132,5 +148,10 @@ export function Terminal({ termKey, isDark, onExit }: { termKey: string; isDark:
     if (termRef.current) termRef.current.options.theme = themeFor(isDark)
   }, [isDark])
 
-  return <div className="term" ref={host} />
+  return (
+    <div className="term-holder">
+      <div className="term" ref={host} />
+      {isBooting && !hasDrawn && !isUncovered && <TermSkeleton phase="booting" onShow={() => setIsUncovered(true)} />}
+    </div>
+  )
 }

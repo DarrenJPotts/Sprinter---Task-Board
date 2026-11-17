@@ -4,7 +4,7 @@ import { WHENS, order, remainingHours, reviewThreads, shortDate, workingDaysLeft
 import { makeRules } from '../../shared/workflow'
 import type { Rules } from '../../shared/workflow'
 import type { PillColor } from '../../shared/model'
-import type { BgTask, ChatTime, Pin, Prefs, ProjectSummary, Snapshot, Story, TerminalInfo, TokenUsage, When } from '../../shared/types'
+import type { BgTask, ChatTime, OpeningPhase, Pin, Prefs, ProjectSummary, Snapshot, Story, TerminalInfo, TerminalState, TokenUsage, When } from '../../shared/types'
 import { api, setProject } from './api'
 import { Card, Tag, itemRef } from './Card'
 import { DialogHost, ask } from './Dialog'
@@ -16,7 +16,8 @@ import type { LayoutNode, PaneNode, SplitNode, Zone } from './layout'
 import { ChatView } from './ChatView'
 import { PaneTasks, Sessions, TaskOutput, Tasks } from './Sessions'
 import { Terminal } from './Terminal'
-import { TimeLog } from './TimeLog'
+import { TermSkeleton } from './Skeleton'
+import { MIN_UNLOGGED, shown as inHours, TimeLog, TimeSheet } from './TimeLog'
 import { Tour } from './Tour'
 import { tourSteps } from './tourSteps'
 import { billed, compact, usageTitle } from './tokens'
@@ -27,7 +28,69 @@ const REVIEWER = 'reviewer'
 type View = 'board' | 'plan'
 type Theme = 'auto' | 'light' | 'dark'
 const NEXT_THEME: Record<Theme, Theme> = { auto: 'light', light: 'dark', dark: 'auto' }
-const THEME_LABEL: Record<Theme, string> = { auto: '◐ Auto', light: '☀ Light', dark: '☾ Dark' }
+const THEME_ICON: Record<Theme, string> = { auto: '◐', light: '☀', dark: '☾' }
+const THEME_NAME: Record<Theme, string> = { auto: 'Auto (follows the system)', light: 'Light', dark: 'Dark' }
+
+// What a chat's dot means: the four states the server reads off its terminal (server/attention.ts).
+const DOT_STATES: { state: TerminalState; name: string; meaning: string }[] = [
+  { state: 'working', name: 'Working', meaning: 'Claude is busy: the terminal printed something in the last few seconds.' },
+  { state: 'asking', name: 'Asking you', meaning: 'Claude is waiting on a choice or a permission. Answer it in the chat.' },
+  { state: 'idle', name: 'Idle', meaning: 'Quiet. If Claude answered since you last typed, its turn is over and it is your move.' },
+  { state: 'exited', name: 'Ended', meaning: 'The terminal has stopped. Resume or start the session again.' },
+]
+const DOT_TITLE = Object.fromEntries(DOT_STATES.map(d => [d.state, `${d.name}: ${d.meaning}`])) as Record<TerminalState, string>
+
+// Rows of tabs in a pane: 1 is one row that scrolls sideways, more wrap onto that many rows (scrolling
+// down past them), and ALL_ROWS wraps and grows to show every tab.
+const ALL_ROWS = 0
+// A tab row is 30px with 8px under it, and the strip keeps 6px below its last row (styles.css, .pane-head .tabs).
+const TAB_PITCH = 38
+const TAB_GAP = 8
+const TAB_PAD = 6
+const rowsText = (rows: number) => (rows === ALL_ROWS ? 'All tabs, wrapped' : rows === 1 ? 'One row of tabs, scrolling sideways' : `${rows} rows of tabs`)
+
+/** How many rows every open tab needs when wrapped: measured by wrapping them for a moment, unpainted. */
+function neededRows(tabs: HTMLElement) {
+  const was = tabs.className
+  tabs.classList.add('wrapped', 'all-rows')
+  const rows = Math.max(1, Math.round((tabs.scrollHeight - TAB_PAD + TAB_GAP) / TAB_PITCH))
+  tabs.className = was
+  return rows
+}
+const shownRows = (tabs: HTMLElement, rows: number) => (rows === ALL_ROWS ? neededRows(tabs) : rows)
+/** A row count, where reaching the rows every tab needs means all of them. */
+const fitRows = (tabs: HTMLElement, rows: number) => (rows > 1 && rows >= neededRows(tabs) ? ALL_ROWS : Math.max(1, rows))
+
+/** A group's label rides with its first tab, so wrapped rows never end on a label whose tabs start the next. */
+function withLabel(label: React.ReactNode, key: string, tab: React.ReactNode) {
+  if (!label) return tab
+  return (
+    <span key={key} className="tab-lead">
+      {label}
+      {tab}
+    </span>
+  )
+}
+
+function DotLegend() {
+  return (
+    <div className="popover dot-legend">
+      <h3>What the dots mean</h3>
+      <ul>
+        {DOT_STATES.map(d => (
+          <li key={d.state}>
+            <span className={`dot ${d.state}`} />
+            <div>
+              <strong>{d.name}</strong>
+              <p>{d.meaning}</p>
+            </div>
+          </li>
+        ))}
+      </ul>
+      <p className="muted">A pink pin or the 🔔 count means a chat needs you.</p>
+    </div>
+  )
+}
 
 function useSystemDark() {
   const query = window.matchMedia('(prefers-color-scheme: dark)')
@@ -97,12 +160,35 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
   const [isSetupOpen, setIsSetupOpen] = useState(false)
   const [isAddPinOpen, setIsAddPinOpen] = popover('pin')
   const [isReviewsOpen, setIsReviewsOpen] = popover('reviews')
+  const [isTimeOpen, setIsTimeOpen] = popover('time')
   const [isTourOpen, setIsTourOpen] = useState(false)
   const [isTasksOpen, setIsTasksOpen] = popover('tasks')
   const [isSessionsOpen, setIsSessionsOpen] = popover('sessions')
   const [outputTask, setOutputTask] = useState<BgTask | null>(null)
   // Chats shown as a conversation instead of their terminal; remembered per chat.
   const [chatViews, setChatViews] = useLocal<string[]>('hq.chatViews', [])
+  const [tabRows, setTabRows] = useLocal<number>('hq.tabRows', 1)
+  const startRowsDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    const grip = event.currentTarget
+    const tabs = grip.previousElementSibling as HTMLElement
+    const startY = event.clientY
+    const start = shownRows(tabs, tabRows)
+    const needed = neededRows(tabs)
+    grip.classList.add('dragging')
+    const move = (e: PointerEvent) => {
+      const rows = Math.max(1, start + Math.round((e.clientY - startY) / TAB_PITCH))
+      setTabRows(rows > 1 && rows >= needed ? ALL_ROWS : rows)
+    }
+    const up = () => {
+      grip.classList.remove('dragging')
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
   // Compact folds every button bar section to its icons; otherwise labels show and the bar wraps onto rows.
   const [isBarCompact, setIsBarCompact] = useLocal('hq.barCompact', false)
   const barCollapsed = isBarCompact ? ['views', 'tools', 'pins'] : []
@@ -193,6 +279,12 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
     document.title = `${inbox.length > 0 ? `(${inbox.length}) ` : ''}${projectName} · Sprinter`
   }, [inbox.length, projectName])
 
+  // Ticket chats with time still to log, most owed first.
+  const unlogged = Object.entries(snap?.time ?? {})
+    .filter(([, time]) => time.unloggedMs >= MIN_UNLOGGED)
+    .map(([key, time]) => ({ key, time, story: byId.get(key) }))
+    .sort((a, b) => b.time.unloggedMs - a.time.unloggedMs)
+  const unloggedMs = unlogged.reduce((sum, entry) => sum + entry.time.unloggedMs, 0)
   const ordered = useMemo(() => (board ? order(board.stories, prefs, hints) : []), [board, prefs, hints])
 
   const lanes: Lane[] = useMemo(() => {
@@ -252,10 +344,23 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
     }
     seenLaunch.current = launch.seq
   }, [launch?.seq])
+  // Terminals this window asked for whose request is still out; the server's own list follows only at the next poll.
+  const [asked, setAsked] = useState<string[]>([])
+  const open = (key: string, work: Promise<Snapshot>) => {
+    setAsked(keys => [...keys, key])
+    void run(work).finally(() => setAsked(keys => keys.filter(k => k !== key)))
+  }
+  const openingPhase = (key: string | null | undefined): OpeningPhase | undefined => {
+    if (!key || live.has(key)) return undefined
+    if (snap?.opening?.[key]) return snap.opening[key]
+    if (!asked.includes(key)) return undefined
+    // Until the server says, a ticket with no worktree yet is cutting one: by far the longest wait.
+    return /^\d+$/.test(key) && !snap?.worktrees.includes(key) ? 'worktree' : 'starting'
+  }
   // A blank Claude chat at the repo root in its own tab; its conversation is kept and resumes like any other.
   const newChat = (into?: string) => {
     const key = `chat-${Date.now().toString(36)}`
-    void run(api.openTerminal(key, {}))
+    open(key, api.openTerminal(key, {}))
     openTab(key, into)
   }
   const isShown = (key: string) => panes(layout).some(p => p.active === key)
@@ -263,8 +368,7 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
   const runningTasks = Object.values(snap?.tasks ?? {}).flat().filter(task => task.status === 'running').length
   const resumable = new Set(snap?.resumable ?? [])
   // Reopens a terminal as it was: the same Claude conversation with no new prompt, or a plain shell.
-  const resume = (key: string) =>
-    void run(api.openTerminal(key, key.endsWith('-shell') ? { isShellOnly: true } : {}))
+  const resume = (key: string) => open(key, api.openTerminal(key, key.endsWith('-shell') ? { isShellOnly: true } : {}))
 
   const startGrip = (event: React.PointerEvent) => {
     const startX = event.clientX
@@ -281,6 +385,28 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
     window.addEventListener('pointerup', up)
   }
 
+  // Colour mode and settings: icons in the head's corner, the same on every screen.
+  const headIcons = (
+    <>
+      <button
+        className="tool head-icon"
+        title={`Colour mode: ${THEME_NAME[theme]}. Click for ${THEME_NAME[NEXT_THEME[theme]]}.`}
+        aria-label={`Colour mode: ${THEME_NAME[theme]}`}
+        onClick={() => setTheme(NEXT_THEME[theme])}
+      >
+        {THEME_ICON[theme]}
+      </button>
+      <button
+        className={`tool head-icon${setupProblems > 0 ? ' alert' : ''}`}
+        onClick={() => setIsSetupOpen(true)}
+        title={setupProblems > 0 ? `Settings: ${setupProblems} to fix` : 'Settings'}
+        aria-label="Settings"
+      >
+        ⚙{setupProblems > 0 && <span className="badge">{setupProblems}</span>}
+      </button>
+    </>
+  )
+
   if (!board) {
     return (
       <div className="main">
@@ -291,18 +417,21 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
             <div className="spacer" />
             <div className="head-tools">
               <DebugLog />
-              <button className="tool" onClick={() => setIsSetupOpen(true)}>
-                ⚙ Setup
-              </button>
+              {headIcons}
             </div>
           </div>
           <p className={problem || snap?.error ? 'error' : 'count'}>
             {problem ?? snap?.error ?? `Reading the board from ${snap?.project.tracker === 'github' ? 'GitHub' : 'Azure DevOps'}…`}
           </p>
           {(problem || snap?.error) && (
-            <button className="tool" onClick={() => void run(api.refresh())}>
-              ⟳ Try again
-            </button>
+            <div className="row-tools">
+              <button className="tool" onClick={() => void run(api.refresh())}>
+                ⟳ Try again
+              </button>
+              <button className="tool" onClick={() => setIsSetupOpen(true)}>
+                ⚙ Open settings
+              </button>
+            </div>
           )}
         </div>
         {isSetupOpen && <Setup onClose={() => setIsSetupOpen(false)} />}
@@ -342,6 +471,7 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
     // Only a Claude chat has a conversation to show; a plain shell has none.
     const hasChat = !!current && !current.endsWith('-shell') && (snap?.sessions ?? []).some(s => s.key === current)
     const isChatView = hasChat && chatViews.includes(current!)
+    const [isLegendOpen, setIsLegendOpen] = popover(`legend:${pane.id}`)
 
     return (
       <div
@@ -360,11 +490,14 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
         onDrop={event => dropOnPane(event, pane)}
       >
         <div className="pane-head">
-        <div className="tabs" role="tablist">
+        <div
+          className={`tabs${tabRows === 1 ? '' : ' wrapped'}${tabRows === ALL_ROWS ? ' all-rows' : ''}`}
+          style={{ '--tab-rows': tabRows } as React.CSSProperties}
+          role="tablist"
+        >
           {tabGroups(pane.tabs, byId, pins, rules).map(group => (
             <div key={group.name} className="tab-group">
-              <span className={`tag ${group.color}`}>{group.name}</span>
-              {group.keys.map(key => (
+              {group.keys.map((key, i) => withLabel(i === 0 && <span className={`tag ${group.color}`}>{group.name}</span>, key, (
                 <div
                   key={key}
                   className={`tab${current === key ? ' on' : ''}`}
@@ -392,7 +525,9 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
                     setFocusedPane(pane.id)
                   }}
                 >
-                  {live.has(key) && <span className={`dot ${terminalOf.get(key)?.state ?? ''}`} />}
+                  {live.has(key) && (
+                    <span className={`dot ${terminalOf.get(key)?.state ?? ''}`} title={DOT_TITLE[terminalOf.get(key)?.state ?? 'idle']} />
+                  )}
                   {renaming?.key === key ? (
                     <input
                       autoFocus
@@ -425,9 +560,31 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
                     ×
                   </button>
                 </div>
-              ))}
+              )))}
             </div>
           ))}
+        </div>
+        <div
+          className="tabs-grip"
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Rows of tabs"
+          aria-valuemin={1}
+          aria-valuenow={tabRows === ALL_ROWS ? undefined : tabRows}
+          aria-valuetext={rowsText(tabRows)}
+          tabIndex={0}
+          title={`${rowsText(tabRows)}. Drag down for more rows, up for fewer; double-click to switch between one row and all.`}
+          onPointerDown={startRowsDrag}
+          onDoubleClick={() => setTabRows(tabRows === 1 ? ALL_ROWS : 1)}
+          onKeyDown={event => {
+            const tabs = event.currentTarget.previousElementSibling as HTMLElement
+            if (event.key === 'ArrowDown') setTabRows(fitRows(tabs, shownRows(tabs, tabRows) + 1))
+            else if (event.key === 'ArrowUp') setTabRows(Math.max(1, shownRows(tabs, tabRows) - 1))
+            else return
+            event.preventDefault()
+          }}
+        >
+          <span />
         </div>
         <div className="pane-tools">
           {hasChat && (
@@ -440,6 +597,23 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
               </button>
             </div>
           )}
+          <PopHost
+            isOpen={isLegendOpen}
+            onClose={() => setIsLegendOpen(false)}
+            button={
+              <button
+                className={`tool pane-icon${isLegendOpen ? ' on' : ''}`}
+                onClick={() => setIsLegendOpen(!isLegendOpen)}
+                title="What the coloured dots on the tabs mean"
+                aria-label="What the dots mean"
+                aria-expanded={isLegendOpen}
+              >
+                ?
+              </button>
+            }
+          >
+            <DotLegend />
+          </PopHost>
           <button className="tool pane-icon" onClick={() => newChat(pane.id)} title="A new blank Claude chat in this pane" aria-label="New chat in this pane">
             ＋
           </button>
@@ -480,11 +654,11 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
             hasWorktree={snap?.worktrees.includes(String(story.id)) ?? false}
             onStart={prompt => {
               setLayout(activate(layoutRef.current, pane.id, String(story.id)))
-              void run(api.openTerminal(String(story.id), { prompt }))
+              open(String(story.id), api.openTerminal(String(story.id), { prompt }))
             }}
             onShell={() => {
               const key = `${story.id}-shell`
-              void run(api.openTerminal(key, { isShellOnly: true }))
+              open(key, api.openTerminal(key, { isShellOnly: true }))
               openTab(key, pane.id)
             }}
             onStop={() => void run(api.closeTerminal(String(story.id)))}
@@ -501,7 +675,9 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
             }}
           />
         )}
-        {isChatView ? (
+        {openingPhase(current) ? (
+          <TermSkeleton phase={openingPhase(current)!} />
+        ) : isChatView ? (
           <ChatView
             termKey={current!}
             isLive={live.has(current!)}
@@ -509,14 +685,20 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
             onSend={text => api.sendLine(current!, text)}
             prompt={snap?.terminals.find(t => t.key === current)?.prompt}
             suggestions={story ? [rules.nextCommand(story, hints[story.id])] : undefined}
-            onChoose={(index, text) => api.choose(current!, index, text)}
+            // The answer is a fresh snapshot: shown at once, a highlighted option's preview needn't wait for the poll.
+            onChoose={(index, text, isMoveOnly) => api.choose(current!, index, text, isMoveOnly).then(next => run(Promise.resolve(next)))}
             onEscape={() => void run(api.sendEscape(current!))}
             onResume={resumable.has(current!) ? () => resume(current!) : undefined}
             onShowTerminal={() => setChatViews(chatViews.filter(k => k !== current))}
             tools={snap?.tasks[current!]?.length ? <PaneTasks key={current} tasks={snap.tasks[current!]!} onShowOutput={setOutputTask} isInline /> : undefined}
           />
         ) : current && live.has(current) ? (
-          <Terminal termKey={current} isDark={isDark} onExit={() => void run(api.snapshot())} />
+          <Terminal
+            termKey={current}
+            isDark={isDark}
+            isBooting={snap?.terminals.find(t => t.key === current)?.isBooting}
+            onExit={() => void run(api.snapshot())}
+          />
         ) : current && snap?.scrollback.includes(current) ? (
           <>
             <div className="ended-bar">
@@ -600,12 +782,7 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
                 ? Tour
               </button>
               <DebugLog />
-              <button className={`tool${setupProblems > 0 ? ' alert' : ''}`} onClick={() => setIsSetupOpen(true)}>
-                ⚙ Setup {setupProblems > 0 && <span className="badge">{setupProblems}</span>}
-              </button>
-              <button className="tool" title="Colour mode" onClick={() => setTheme(NEXT_THEME[theme])}>
-                {THEME_LABEL[theme]}
-              </button>
+              {headIcons}
             </div>
           </div>
           <div className="props">
@@ -668,7 +845,7 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
                 reviews={snap?.reviews ?? []}
                 isReviewerUp={terminalOf.get(REVIEWER)?.isAlive === true}
                 onStartReviewer={() => {
-                  void run(api.openPin(REVIEWER))
+                  open(REVIEWER, api.openPin(REVIEWER))
                   openTab(REVIEWER)
                 }}
                 onSend={text => {
@@ -690,9 +867,6 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
           >
             <Inbox items={inbox} onOpen={openTab} onClose={() => setIsInboxOpen(false)} />
           </PopHost>
-          <button className="tool" onClick={() => void run(api.refresh())} title="Read the board again">
-            ⟳<span className="label">Refresh</span>
-          </button>
           <PopHost
             isOpen={isTasksOpen}
             onClose={() => setIsTasksOpen(false)}
@@ -768,11 +942,12 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
                     openTab(pin.key)
                     return
                   }
-                  if (pin.mode === 'fresh' || !terminal?.isAlive) await run(api.openPin(pin.key))
+                  // The tab opens at once and shows the start's progress, rather than after it.
                   openTab(pin.key)
+                  if (pin.mode === 'fresh' || !terminal?.isAlive) open(pin.key, api.openPin(pin.key))
                 }}
               >
-                {terminal?.isAlive && <span className={`dot ${terminal.state}`} />}
+                {terminal?.isAlive && <span className={`dot ${terminal.state}`} title={DOT_TITLE[terminal.state]} />}
                 {pin.icon}<span className={pin.icon ? 'label' : 'pin-name'}>{pin.label}</span>
               </button>
             )
@@ -863,6 +1038,48 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
               ))}
             </div>
           )}
+        </div>
+        <div className="fabs">
+          {unlogged.length > 0 && (
+            <PopHost
+              isOpen={isTimeOpen}
+              onClose={() => setIsTimeOpen(false)}
+              button={
+                <button
+                  className="fab time"
+                  onClick={() => setIsTimeOpen(!isTimeOpen)}
+                  title={`${inHours(unloggedMs)} of chat time not logged`}
+                  aria-label={`Log time: ${inHours(unloggedMs)} not logged`}
+                >
+                  ⏱<span className="badge">{inHours(unloggedMs).replace(' h', 'h')}</span>
+                </button>
+              }
+            >
+              <TimeSheet
+                entries={unlogged}
+                canLog={snap?.project.tracker === 'ado'}
+                onLog={(key, taskId, hours) => run(api.logTime(key, taskId, hours))}
+                onClear={key => run(api.clearTime(key))}
+                onLogAll={async items => {
+                  // One at a time, so each ticket's log is saved before the next; one that fails shows its error and stays listed.
+                  for (const item of items) await run(api.logTime(item.key, item.taskId, item.hours))
+                }}
+                onOpen={key => {
+                  setIsTimeOpen(false)
+                  openTab(key)
+                }}
+              />
+            </PopHost>
+          )}
+        <button
+          className={`fab${snap?.isRefreshing ? ' busy' : ''}`}
+          onClick={() => void run(api.refresh())}
+          disabled={snap?.isRefreshing}
+          title="Read the board again"
+          aria-label="Read the board again"
+        >
+          ⟳
+        </button>
         </div>
       </div>
 
@@ -997,6 +1214,7 @@ function TicketHead(props: {
             key={story.id}
             time={props.time}
             tasks={story.tasks}
+            story={story}
             canLog={props.canLogTime}
             onLog={props.onLogTime}
             onClear={props.onClearTime}
@@ -1135,7 +1353,8 @@ function PopHost({ isOpen, onClose, button, children }: { isOpen: boolean; onClo
   useLayoutEffect(() => {
     if (!isOpen || !host.current) return
     const at = host.current.getBoundingClientRect()
-    const area = (host.current.closest('.main') ?? document.body).getBoundingClientRect()
+    // A popover in a chat pane stays inside the pane: the board beside it would cover the overhang.
+    const area = (host.current.closest('.pane, .main') ?? document.body).getBoundingClientRect()
     const toRight = area.right - at.left - 16
     const toLeft = at.right - area.left - 16
     setPlace(toRight >= toLeft ? { side: 'right', room: toRight } : { side: 'left', room: toLeft })

@@ -25,13 +25,37 @@ export function screenLines(screen: Screen): string[] {
 const CURSOR = /^([\s│|]*)❯ (.*)$/
 const RULE = /^[\s─━═╭╮╰╯┌┐└┘│|_-]*$/
 // Footer and hint rows that are not part of the question.
-const HINT = /^(Esc to|Enter to|↑|Tab to|ctrl\+|\? for shortcuts)/i
+const HINT = /^(Esc to|Enter to|↑|Tab to|ctrl\+|\? for shortcuts|Notes:)/i
 const NUMBER = /^\d{1,2}\.\s+/
+// A box drawn beside the list (AskUserQuestion's preview of the highlighted option): a corner running into
+// its edge, which no label has, or a side after a gap. A label as long as its column leaves no gap.
+const BESIDE = /(\s*[┌╭└╰├]─|\s{2,}[│┃]).*$/
+// The tab row of a multi-question form ("☐ D4 Endings", "☒ D3 Scope  ✔ Submit").
+const TABS = /[☐☒☑✔✓]\s*\S/
+const BOX_TOP = /[┌╭]/
+const BOX_SIDE = /[│┃]/
+
+const clip = (text: string) => text.replace(BESIDE, '').trim()
+const unbordered = (row: string) => row.replace(/^[\s│|]+|[\s│|]+$/g, '')
+
+/** The text inside the box whose top-left corner is at column `x` of row `top`, its indent kept. */
+function boxText(rows: string[], top: number, x: number): string {
+  const inner: string[] = []
+  for (let y = top + 1; y < rows.length; y += 1) {
+    const edge = rows[y]![x]
+    if (!edge || !BOX_SIDE.test(edge)) break
+    inner.push(rows[y]!.slice(x + 1).replace(/[│┃]\s*$/, '').trimEnd())
+  }
+  while (inner.length > 0 && !inner.at(-1)!.trim()) inner.pop()
+  while (inner.length > 0 && !inner[0]!.trim()) inner.shift()
+  const indent = Math.min(...inner.filter(line => line.trim()).map(line => /^ */.exec(line)![0].length))
+  return inner.map(line => line.slice(indent)).join('\n')
+}
 
 /**
  * The choice Claude is waiting on, read off the screen: the rows lined up with the ❯ cursor (numbered or
  * not), which one the cursor is on, and the question above them. A row indented further than the options
- * is an option's description and is skipped.
+ * is an option's description, or, when a preview box sits beside the list, the rest of a wrapped label.
  */
 export function readPrompt(lines: string[]): ChatPrompt | undefined {
   const rows = lines.map(line => line.replace(/\s+$/, ''))
@@ -51,15 +75,18 @@ export function readPrompt(lines: string[]): ChatPrompt | undefined {
   const column = indent.length + 2
   const optionAt = (y: number) => {
     const row = rows[y] ?? ''
-    if (y === at) return CURSOR.exec(row)![2]!.trim()
+    if (y === at) return clip(CURSOR.exec(row)![2]!)
     if (row.length <= column || row.slice(0, column).trim().replace(/[│|]/g, '') !== '' || row[column] === ' ') return null
-    const text = row.slice(column).trim()
+    const text = clip(row.slice(column))
     return text && !HINT.test(text) ? text : null
   }
-  const isDescription = (y: number) => {
+  const descriptionAt = (y: number) => {
     const row = rows[y] ?? ''
-    return row.length > column && row.slice(0, column + 1).trim().replace(/[│|]/g, '') === '' && row.slice(column).trim() !== ''
+    if (row.length <= column || row.slice(0, column + 1).trim().replace(/[│|]/g, '') !== '') return ''
+    const text = clip(row.slice(column))
+    return HINT.test(text) ? '' : text
   }
+  const isDescription = (y: number) => descriptionAt(y) !== ''
 
   // A description under an option, a blank line or a divider ("5. Chat about this" sits under one) can
   // come between options without ending the list.
@@ -69,35 +96,95 @@ export function readPrompt(lines: string[]): ChatPrompt | undefined {
     if (optionAt(y) !== null) first = y
     else if (!isBetween(y)) break
   }
+  // In a narrow terminal the preview box sits under the list instead of beside it; it ends the list, or its
+  // rows would read as options.
+  let below = -1
   let last = at
   for (let y = at + 1; y < rows.length; y += 1) {
+    if (/^\s*[┌╭]─/.test(rows[y]!)) {
+      below = y
+      break
+    }
     if (optionAt(y) !== null) last = y
     else if (!isBetween(y)) break
   }
+  // The highlighted option's preview: a box beside the list (its top level with the first option or just
+  // above it) or under it. A label too long for the list's column wraps onto the next row then.
+  let preview: string | undefined
+  for (let y = Math.max(0, first - 1); y <= first + 1 && !preview; y += 1) {
+    const x = (rows[y] ?? '').search(BOX_TOP)
+    if (x > column + 2) preview = boxText(rows, y, x) || undefined
+  }
+  if (!preview && below >= 0) preview = boxText(rows, below, rows[below]!.search(BOX_TOP)) || undefined
+
   const options: string[] = []
+  const details: string[] = []
   let selected = 0
   for (let y = first; y <= last; y += 1) {
     const text = optionAt(y)
-    if (text === null) continue
-    if (y === at) selected = options.length
-    options.push(text.replace(NUMBER, ''))
+    if (text !== null) {
+      if (y === at) selected = options.length
+      options.push(text.replace(NUMBER, ''))
+      details.push('')
+      continue
+    }
+    const more = descriptionAt(y)
+    if (!more || options.length === 0) continue
+    const i = options.length - 1
+    if (preview) options[i] = `${options[i]} ${more}`
+    else details[i] = details[i] ? `${details[i]} ${more}` : more
   }
   if (options.length < 2) return undefined
 
-  // The question: the nearest line above the options that asks something, else the nearest line of text.
-  let question = ''
-  for (let y = first - 1; y >= Math.max(0, first - 12); y -= 1) {
-    const row = rows[y]!.replace(/^[\s│|]+|[\s│|]+$/g, '')
-    if (!row || RULE.test(row) || HINT.test(row)) continue
-    if (row.includes('?')) {
-      question = row
+  // The question: the paragraph above the options that asks something (else the nearest one), its lines
+  // joined. A paragraph is the run of rows at one indent, so a dialog's indented detail stays out of it.
+  const isText = (y: number) => {
+    const row = unbordered(rows[y] ?? '')
+    return Boolean(row) && !RULE.test(row) && !HINT.test(row) && !TABS.test(row)
+  }
+  const indentOf = (y: number) => /^[\s│|]*/.exec(rows[y] ?? '')![0].length
+  let ask = -1
+  let nearest = -1
+  for (let y = first - 1; y >= Math.max(0, first - 14); y -= 1) {
+    if (!isText(y)) continue
+    if (nearest < 0) nearest = y
+    if (rows[y]!.includes('?')) {
+      ask = y
       break
     }
-    question ||= row
+  }
+  const anchor = ask >= 0 ? ask : nearest
+  let question = ''
+  if (anchor >= 0) {
+    let top = anchor
+    let bottom = anchor
+    while (top > 0 && isText(top - 1) && indentOf(top - 1) === indentOf(anchor)) top -= 1
+    while (bottom < first - 1 && isText(bottom + 1) && indentOf(bottom + 1) === indentOf(anchor)) bottom += 1
+    question = rows
+      .slice(top, bottom + 1)
+      .map(unbordered)
+      .join(' ')
+  }
+
+  // The form's tab row, above the question: which question of several this is.
+  let header: string | undefined
+  for (let y = (anchor >= 0 ? anchor : first) - 1; y >= Math.max(0, first - 16); y -= 1) {
+    if (TABS.test(rows[y] ?? '')) {
+      header = unbordered(rows[y]!).replace(/^←\s*|\s*→$/g, '').replace(/\s{2,}/g, '   ')
+      break
+    }
   }
 
   // "Type something." takes your own words: the cursor goes to it and what you type is the answer.
   const typed = options.findIndex(option => /^type something\b/i.test(option))
 
-  return { question, options, selected, ...(typed >= 0 && { typed }) }
+  return {
+    question,
+    options,
+    selected,
+    ...(typed >= 0 && { typed }),
+    ...(details.some(Boolean) && { details }),
+    ...(preview && { preview }),
+    ...(header && { header }),
+  }
 }

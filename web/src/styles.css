@@ -67,7 +67,7 @@ a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: 2px; 
 
 .app { display: grid; grid-template-columns: minmax(0, 1fr) 10px var(--side-w, 560px); height: 100%; }
 .app.no-side { grid-template-columns: minmax(0, 1fr); }
-.main { overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+.main { overflow: hidden; display: flex; flex-direction: column; min-width: 0; position: relative; }
 
 /* Header */
 .page-head { padding: 28px 40px 4px; }
@@ -110,6 +110,32 @@ a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: 2px; 
 
 /* Board */
 .board { display: flex; align-items: flex-start; gap: 22px; padding: 26px 40px 48px; overflow: auto; flex: 1; min-height: 0; }
+/* Refresh floats over the board, clear of the lanes' scrollbars, so it never leaves the board's corner. */
+.fabs { position: absolute; right: 28px; bottom: 28px; z-index: 5; display: flex; flex-direction: column; align-items: flex-end; gap: 12px; }
+/* Under the toolbar's popovers, but the open time sheet rises over the toolbar it can reach up to. */
+.fabs:has(.popover) { z-index: 15; }
+.fab {
+  position: relative; width: 48px; height: 48px; display: grid; place-items: center;
+  border: var(--b-thick) solid var(--edge); border-radius: 50%; background: var(--c-pink); color: #000; font-size: 22px; font-weight: 700;
+  box-shadow: 3px 3px 0 var(--shadow); transition: transform 80ms, box-shadow 80ms;
+}
+.fab:hover { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--shadow); }
+.fab:active { transform: translate(3px, 3px); box-shadow: 0 0 0 var(--shadow); }
+.fab.time { background: var(--c-yellow); }
+.fab.time .badge { position: absolute; top: -8px; right: -12px; margin: 0; }
+/* The time sheet opens up and to the left of its button, which sits in the board's corner. */
+.fabs .pop-host > .popover.timesheet { top: auto; bottom: 0; right: calc(100% + 12px); left: auto; width: min(560px, 70vw); max-height: 70vh; }
+.timesheet-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+.timesheet-head h3 { margin: 0; }
+.timesheet-row .time-form { margin-top: 8px; }
+.timesheet-foot { position: sticky; bottom: -12px; display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 0 12px; border-top: var(--b) solid var(--edge); background: var(--surface); }
+.timesheet-row { padding: 10px 0; border-top: var(--b) solid var(--edge); }
+.timesheet-row:first-of-type { border-top: 0; }
+.timesheet-title { font-weight: 700; text-align: left; }
+.timesheet-title:hover { text-decoration: underline; }
+.fab.busy { cursor: progress; animation: fab-spin 1s linear infinite; }
+@keyframes fab-spin { to { rotate: 360deg; } }
+@media (prefers-reduced-motion: reduce) { .fab.busy { animation: none; opacity: 0.6; } }
 .lane {
   width: 280px; flex: 0 0 280px; background: var(--side); border: var(--b-thick) solid var(--edge);
   border-radius: var(--radius); box-shadow: var(--lift-big) var(--lift-big) 0 var(--shadow); overflow: hidden;
@@ -195,6 +221,38 @@ a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: 2px; 
   flex: 1; min-height: 0; margin: 0 4px 4px; padding: 10px 6px 6px 12px; background: var(--term-bg);
   border: var(--b-thick) solid var(--edge); border-radius: var(--radius); box-shadow: var(--lift) var(--lift) 0 var(--shadow);
 }
+.term-holder { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* A session getting going: a terminal-shaped placeholder saying what it waits on, in place of a blank pane. */
+.term-skeleton {
+  flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 18px; margin: 0 4px 4px; padding: 16px 18px; overflow: hidden;
+  background: var(--term-bg); color: #ececec; border: var(--b-thick) solid var(--edge); border-radius: var(--radius); box-shadow: var(--lift) var(--lift) 0 var(--shadow);
+}
+.term-holder > .term-skeleton { position: absolute; inset: 0; z-index: 2; }
+.term-skeleton-head { display: flex; align-items: flex-start; gap: 12px; }
+.term-skeleton-head > div { flex: 1; min-width: 0; }
+.term-skeleton-head strong { font-size: 14px; }
+.term-skeleton-head p { margin: 4px 0 0; font-size: 13px; color: #a0a0a8; }
+.term-skeleton .spinner {
+  flex: none; width: 18px; height: 18px; margin-top: 1px; border-radius: 50%;
+  border: 3px solid #ffdc5844; border-top-color: #ffdc58; animation: fab-spin 0.9s linear infinite;
+}
+.term-skeleton-lines { display: flex; flex-direction: column; gap: 12px; }
+.term-skeleton-lines .bar {
+  height: 12px; border-radius: 3px;
+  background: linear-gradient(90deg, #2e2e33 0%, #44444c 50%, #2e2e33 100%) 0 0 / 200% 100%; animation: shimmer 1.4s ease-in-out infinite;
+}
+.term-skeleton-lines .bar:nth-child(1) { width: 62%; }
+.term-skeleton-lines .bar:nth-child(2) { width: 38%; }
+.term-skeleton-lines .bar:nth-child(3) { width: 0; }
+.term-skeleton-lines .bar:nth-child(4) { width: 84%; }
+.term-skeleton-lines .bar:nth-child(5) { width: 71%; }
+.term-skeleton-lines .bar:nth-child(6) { width: 55%; }
+.term-skeleton-lines .bar:nth-child(7) { width: 0; }
+.term-skeleton-lines .bar:nth-child(8) { width: 46%; }
+.term-skeleton-lines .bar:nth-child(9) { width: 78%; }
+.term-skeleton-lines .bar:nth-child(10) { width: 30%; }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@media (prefers-reduced-motion: reduce) { .term-skeleton .spinner, .term-skeleton-lines .bar { animation: none; } }
 .term-empty {
   flex: 1; display: grid; place-items: center; text-align: center; padding: 24px; margin: 0 4px 4px; font-weight: 700;
   border: var(--b-thick) dashed var(--edge); border-radius: var(--radius); color: var(--ink-2);
@@ -244,7 +302,7 @@ a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: 2px; 
 .tool.static { cursor: default; box-shadow: none; }
 .tool.static:hover, .tool.static:active { transform: none; box-shadow: none; }
 .ticket .usage { margin: 8px 0 0; font-size: 12px; font-weight: 700; color: var(--ink-2); }
-.title-row { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; }
+.title-row { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-bottom: 14px; }
 .title-row .page-title { margin: 0; }
 .popover.debug { left: 0; right: auto; width: min(620px, 80vw); }
 .log-row { padding: 8px 0; border-top: var(--b) solid var(--edge); }
@@ -252,7 +310,7 @@ a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: 2px; 
 .log-row code { display: block; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
 .tabs { flex-wrap: wrap; row-gap: 10px; column-gap: 18px; }
 .tab-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.tab-group > .tag { text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px; }
+.tab-group .tag { text-transform: uppercase; letter-spacing: 0.04em; font-size: 11px; }
 .head-tools { display: flex; align-items: center; gap: 10px; }
 /* The debug log sits at the right edge now, so it opens leftwards. */
 .head-tools .popover.debug { left: auto; right: 0; }
@@ -533,7 +591,7 @@ html, body { overflow: hidden; }
    way, down to a floor, and past that the pane scrolls rather than squash or overlap anything. */
 .pane { overflow-y: auto; }
 .pane > .tabs, .pane > .ticket, .pane > .ended-bar, .chat-composer { flex-shrink: 0; }
-.pane > .term, .pane > .term-empty, .chat-wrap { min-height: 140px; }
+.pane > .term, .pane > .term-holder, .pane > .term-skeleton, .pane > .term-empty, .chat-wrap { min-height: 140px; }
 .chat-scroll { min-height: 60px; }
 
 /* Compact folds the button bar's labels into their icons; without it the bar wraps onto rows as it needs.
@@ -596,6 +654,18 @@ html, body { overflow: hidden; }
 .chat-choice-options .tool.primary { background: #000; color: #fff; }
 .chat-choice-n { display: inline-grid; place-items: center; min-width: 20px; height: 20px; margin-right: 6px; font-size: 11px; border: var(--b) solid currentColor; border-radius: 999px; }
 .chat-choice .count { color: rgba(0, 0, 0, 0.7); }
+/* A long question with a preview can outgrow the pane: the panel scrolls rather than pushing the chat away. */
+.chat-choice { max-height: 65vh; overflow-y: auto; }
+.chat-choice-tabs { font-size: 12px; font-weight: 700; color: rgba(0, 0, 0, 0.7); white-space: pre-wrap; }
+.chat-choice-head strong { line-height: 1.4; }
+.chat-choice-options.detailed .tool { flex-wrap: wrap; }
+.chat-choice-label { flex: 1; min-width: 0; }
+.chat-choice-detail { flex-basis: 100%; padding-left: 26px; font-size: 12px; font-weight: 500; opacity: 0.75; }
+.chat-choice-preview { flex: 0 0 auto; background: #fff; border: var(--b) solid #000; border-radius: var(--radius); }
+.chat-choice-preview-head { display: flex; align-items: center; gap: 10px; padding: 6px 8px; font-size: 12px; border-bottom: var(--b) solid #000; }
+.chat-choice-preview-head span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.chat-choice-preview .tool.primary { background: #000; color: #fff; border-color: #000; }
+.chat-choice-preview pre { margin: 0; padding: 8px 10px; max-height: 260px; overflow: auto; font-family: var(--mono); font-size: 12px; line-height: 1.45; color: #000; white-space: pre; }
 
 /* The first-run guide: numbered steps, a live check of this machine, commands with a Copy button. */
 .guide { display: flex; flex-direction: column; gap: 18px; max-width: 860px; }
@@ -637,3 +707,37 @@ html, body { overflow: hidden; }
 .chat-suggestion:hover { border-style: solid; background: var(--c-yellow); color: #000; }
 .chat-suggestion code { font-family: var(--mono); }
 @media (hover: none) { .chat-meta, .md pre .copy-code { opacity: 1; } }
+
+/* Icon-only buttons in the page head: colour mode and settings sit in the corner, out of the way. */
+.head-icon { position: relative; width: 34px; height: 34px; padding: 0; display: inline-grid; place-items: center; font-size: 17px; }
+.head-icon .badge { position: absolute; top: -8px; right: -10px; margin: 0; }
+
+/* What the tab dots mean, from the ? in each chat pane. */
+.pane-tools .pop-host > .popover.dot-legend { top: calc(100% + 8px); width: min(340px, 80vw); }
+/* The ? leads the pane's icons, so the push to the right moves from the first icon to it. */
+.pane-tools > .pop-host { margin-left: auto; }
+.pane-tools > .pop-host ~ .pane-icon:first-of-type { margin-left: 0; }
+.dot-legend ul { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 10px; }
+.dot-legend li { display: grid; grid-template-columns: 14px 1fr; gap: 10px; align-items: start; }
+.dot-legend li .dot { margin-top: 3px; }
+.dot-legend p { margin: 2px 0 0; font-size: 12px; }
+.dot-legend > p.muted { margin: 0; opacity: 0.75; }
+.row-tools { display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* Rows of tabs, set by dragging the grip under them: one row scrolls sideways; more rows wrap, scrolling down
+   past the rows set; all-rows grows to show every tab. TAB_PITCH in App.tsx is the 30px row plus its 8px gap. */
+.pane-head .tab { height: 30px; }
+.pane-head .tabs.wrapped {
+  flex-wrap: wrap; align-items: center; align-content: flex-start; row-gap: 8px; column-gap: 6px;
+  overflow-x: hidden; overflow-y: auto; max-height: calc(var(--tab-rows) * 38px - 8px + 6px);
+}
+.pane-head .tabs.all-rows { max-height: none; overflow: visible; }
+.pane-head .tabs.wrapped .tab-group { display: contents; }
+
+.tabs-grip { height: 10px; margin: -6px 0 -2px; display: grid; place-items: center; cursor: row-resize; touch-action: none; border-radius: 4px; }
+.tabs-grip span { width: 44px; height: 4px; border-radius: 2px; background: var(--edge); opacity: 0.35; transition: opacity 120ms ease, width 120ms ease; }
+.tabs-grip:hover span, .tabs-grip.dragging span, .tabs-grip:focus-visible span { opacity: 1; width: 72px; background: var(--c-pink); }
+.tabs-grip:focus-visible { outline: 3px solid var(--c-pink); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) { .tabs-grip span { transition: none; } }
+.tab-lead { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.pane-head .tabs.wrapped .tab-group + .tab-group > .tab-lead { margin-left: 12px; }

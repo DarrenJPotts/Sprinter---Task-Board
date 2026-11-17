@@ -147,7 +147,8 @@ type Composer = {
   tools?: ReactNode
   /** The choice Claude is waiting on, read off its screen, and how to answer it. */
   prompt?: ChatPrompt
-  onChoose?: (index: number, text?: string) => Promise<unknown>
+  /** Picks an option; with `isMoveOnly`, only highlights it, so its preview shows. */
+  onChoose?: (index: number, text?: string, isMoveOnly?: boolean) => Promise<unknown>
   /** Commands worth one click, such as the ticket's next step: a click puts one in the box. */
   suggestions?: string[]
 }
@@ -170,12 +171,16 @@ function Composer({ termKey, isLive, state, onSend, onEscape, onResume, onShowTe
   const choice = isAsking && onChoose ? prompt : undefined
   // "Type something." turns the message box into the answer box.
   const isTypedAnswer = choice?.typed !== undefined
-  const pick = async (index: number, text?: string) => {
+  // A question with a preview shows it for the highlighted option only, so a click there highlights first and
+  // a second click (or Choose) answers; without one, a click answers at once.
+  const hasPreview = choice?.preview !== undefined
+  const pick = async (index: number, text?: string, isMoveOnly = false) => {
     if (!onChoose || isSending) return
     setIsSending(true)
     setError('')
     try {
-      await onChoose(index, text)
+      await onChoose(index, text, isMoveOnly)
+      if (isMoveOnly) return
       setDraft('')
       onSent()
     } catch (caught) {
@@ -237,27 +242,48 @@ function Composer({ termKey, isLive, state, onSend, onEscape, onResume, onShowTe
     <div className="chat-composer">
       {choice && (
         <div className="chat-choice" role="group" aria-label={choice.question || 'Claude is asking'}>
+          {choice.header && <div className="chat-choice-tabs">{choice.header}</div>}
           <div className="chat-choice-head">
             <strong>{choice.question || 'Claude is asking:'}</strong>
             <button className="chat-choice-terminal" onClick={onShowTerminal} title="Answer in the terminal instead">
               Terminal ↗
             </button>
           </div>
-          <div className="chat-choice-options">
-            {choice.options.map((option, index) =>
-              index === choice.typed ? null : (
+          <div className={`chat-choice-options${choice.details ? ' detailed' : ''}`}>
+            {choice.options.map((option, index) => {
+              if (index === choice.typed) return null
+              const isHighlighted = index === choice.selected
+              const detail = choice.details?.[index]
+              return (
                 <button
                   key={option + index}
-                  className={`tool${index === choice.selected ? ' primary' : ''}`}
+                  className={`tool${isHighlighted ? ' primary' : ''}`}
                   disabled={isSending}
-                  onClick={() => void pick(index)}
-                  title={index === choice.selected ? 'Highlighted in the terminal now' : undefined}
+                  aria-pressed={hasPreview ? isHighlighted : undefined}
+                  onClick={() => void pick(index, undefined, hasPreview && !isHighlighted)}
+                  title={
+                    hasPreview ? (isHighlighted ? 'Choose this answer' : 'Show its preview; click again to choose it') : isHighlighted ? 'Highlighted in the terminal now' : undefined
+                  }
                 >
-                  <span className="chat-choice-n">{index + 1}</span> {option}
+                  <span className="chat-choice-n">{index + 1}</span> <span className="chat-choice-label">{option}</span>
+                  {detail && <span className="chat-choice-detail">{detail}</span>}
                 </button>
-              ),
-            )}
+              )
+            })}
           </div>
+          {hasPreview && (
+            <div className="chat-choice-preview">
+              <div className="chat-choice-preview-head">
+                <span>
+                  Preview · <strong>{choice.options[choice.selected]}</strong>
+                </span>
+                <button className="tool primary" disabled={isSending} onClick={() => void pick(choice.selected)}>
+                  Choose {choice.selected + 1}
+                </button>
+              </div>
+              <pre>{choice.preview}</pre>
+            </div>
+          )}
           {isTypedAnswer && <span className="count">Or type your own answer below.</span>}
         </div>
       )}

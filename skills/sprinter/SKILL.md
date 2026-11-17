@@ -23,8 +23,9 @@ out to use the app's active project), and if nothing answers, tell the user Spri
 curl -s "$HQ_URL/api/next" -H "x-hq-project: $HQ_PROJECT"
 ```
 
-The answer is a list of tickets still in play. Each has `id`, `title`, `column`, `stage`, `command`, `isRunning`
-and `isOffSprint`. `command` is exactly what the ticket's ▶ Claude button would send.
+The answer is a list of tickets still in play. Each has `id`, `title`, `column`, `stage`, `command`, `isRunning`,
+`hasConversation` and `isOffSprint`. `command` is exactly what the ticket's ▶ Claude button would send.
+`hasConversation` means the ticket has a Claude conversation from before that can be reopened.
 
 ## 2. Pick the tickets the user means
 
@@ -33,6 +34,8 @@ and `isOffSprint`. `command` is exactly what the ticket's ▶ Claude button woul
 - Leave out tickets with `isRunning: true`: their session is already going. Say which ones.
 - Leave out `isOffSprint: true` tickets unless the user asks for them.
 - If the user named tickets, use those, each with its own next command unless they gave one.
+- "Resume", "reopen" or "bring back" sessions (for example after Sprinter restarted) means tickets with
+  `hasConversation: true` and `isRunning: false`, started with `resume` (below), so nothing new is sent.
 
 ## 3. Show the list, then start on a yes
 
@@ -47,6 +50,11 @@ curl -s -X POST "$HQ_URL/api/sessions/start" \
 ```
 
 - `command` is optional: without it the ticket's own next command runs.
+- `"resume": true` reopens the ticket's conversation where it left off and sends nothing, like ⟳ Resume chat
+  (`command` is ignored). A ticket with no conversation is skipped. Resuming costs no tokens until someone types
+  in it, so the yes in step 3 isn't needed when the user asked to resume.
+- Every start of a ticket with a conversation, with `resume` or not, continues that same conversation: a command
+  goes in as its next turn.
 - At most 12 per call. For more, ask whether to start them in batches.
 - The answer lists `started` and `skipped` (with why). Report both, briefly.
 
