@@ -35,6 +35,24 @@ const TABS = /[☐☒☑✔✓]\s*\S/
 const BOX_TOP = /[┌╭]/
 const BOX_SIDE = /[│┃]/
 
+// A list item's first row in a question: the rows under it are its wrapped text.
+const ITEM = /^([-*•]|\d{1,2}[.)])\s/
+
+/** A question's rows as text: wrapped rows rejoined, blank rows kept as paragraph breaks, items on their own lines. */
+function reflow(lines: string[]): string {
+  let text = ''
+  let isBlank = false
+  for (const line of lines) {
+    if (!line) {
+      isBlank = text !== ''
+      continue
+    }
+    text += !text ? line : isBlank ? `\n\n${line}` : ITEM.test(line) ? `\n${line}` : ` ${line}`
+    isBlank = false
+  }
+  return text
+}
+
 const clip = (text: string) => text.replace(BESIDE, '').trim()
 const unbordered = (row: string) => row.replace(/^[\s│|]+|[\s│|]+$/g, '')
 
@@ -71,18 +89,25 @@ export function readPrompt(lines: string[]): ChatPrompt | undefined {
   }
   if (at < 0) return undefined
 
-  // An option row: the same indent as the cursor, two spaces where the ❯ would be, then text.
+  // An option row: the cursor's indent exactly (a border only where the cursor row has one, or a boxed
+  // question above an unboxed list reads as options), two spaces where the ❯ would be, then text.
   const column = indent.length + 2
+  const edge = (text: string) => text.replace(/[│|]/g, '|')
+  const isLinedUp = (row: string, spaces: number) =>
+    edge(row.slice(0, indent.length)) === edge(indent) && row.slice(indent.length, column + spaces).trim() === ''
+  // In a numbered list every option has its number; a row without one is not an option.
+  const isNumbered = NUMBER.test(clip(CURSOR.exec(rows[at]!)![2]!))
   const optionAt = (y: number) => {
     const row = rows[y] ?? ''
     if (y === at) return clip(CURSOR.exec(row)![2]!)
-    if (row.length <= column || row.slice(0, column).trim().replace(/[│|]/g, '') !== '' || row[column] === ' ') return null
+    if (row.length <= column || !isLinedUp(row, 0) || row[column] === ' ') return null
     const text = clip(row.slice(column))
-    return text && !HINT.test(text) ? text : null
+    if (!text || HINT.test(text)) return null
+    return isNumbered && !NUMBER.test(text) ? null : text
   }
   const descriptionAt = (y: number) => {
     const row = rows[y] ?? ''
-    if (row.length <= column || row.slice(0, column + 1).trim().replace(/[│|]/g, '') !== '') return ''
+    if (row.length <= column || !isLinedUp(row, 1)) return ''
     const text = clip(row.slice(column))
     return HINT.test(text) ? '' : text
   }
@@ -155,7 +180,15 @@ export function readPrompt(lines: string[]): ChatPrompt | undefined {
   }
   const anchor = ask >= 0 ? ask : nearest
   let question = ''
-  if (anchor >= 0) {
+  // A question drawn in a box (AskUserQuestion's, with │ down its left edge) is the box's whole text.
+  const isBoxed = (y: number) => /^[│┃]/.test(rows[y] ?? '') && !/^[│┃]\s{0,2}[❯]/.test(rows[y] ?? '')
+  if (anchor >= 0 && isBoxed(anchor) && !isBoxed(at)) {
+    let top = anchor
+    let bottom = anchor
+    while (top > 0 && isBoxed(top - 1)) top -= 1
+    while (bottom < first - 1 && isBoxed(bottom + 1)) bottom += 1
+    question = reflow(rows.slice(top, bottom + 1).filter(row => !TABS.test(row)).map(unbordered))
+  } else if (anchor >= 0) {
     let top = anchor
     let bottom = anchor
     while (top > 0 && isText(top - 1) && indentOf(top - 1) === indentOf(anchor)) top -= 1

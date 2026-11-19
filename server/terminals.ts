@@ -182,6 +182,11 @@ async function workdir(p: Project, key: string): Promise<string> {
   return path
 }
 
+// The chat shows each edit as a diff; a line from Claude just before it says what the diff is for. Claude
+// Code records a conversation's system prompt on its first turn, so a chat started before this keeps its own.
+const NARRATE =
+  'Someone may be watching this session to follow along. Before each file edit or write, say in one short plain sentence what you are changing and why.'
+
 /**
  * Quotes a prompt as one argument for the terminal's shell. Windows PowerShell 5.1 strips
  * double quotes when it hands an argument to a program, so they go in escaped as \" there.
@@ -303,12 +308,12 @@ export async function openTerminal(
     if (known && hasTranscript(known, true)) {
       // Same conversation, so the ticket keeps its context; a new prompt goes in as the next turn.
       const prompt = options.isPromptOnlyIfNew ? undefined : options.prompt
-      command = `${config.claudeCommand} --resume ${known}${prompt ? ` ${quote(prompt, config.shell)}` : ''}`
+      command = `${config.claudeCommand} --resume ${known} --append-system-prompt ${quote(NARRATE, config.shell)}${prompt ? ` ${quote(prompt, config.shell)}` : ''}`
     } else {
       const id = randomUUID()
       saved.sessions[key] = id
       saveState(p)
-      command = `${config.claudeCommand} --session-id ${id}${options.prompt ? ` ${quote(options.prompt, config.shell)}` : ''}`
+      command = `${config.claudeCommand} --session-id ${id} --append-system-prompt ${quote(NARRATE, config.shell)}${options.prompt ? ` ${quote(options.prompt, config.shell)}` : ''}`
     }
     shell.write(`${command}\r`)
   }

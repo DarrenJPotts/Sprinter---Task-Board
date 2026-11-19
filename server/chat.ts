@@ -1,11 +1,14 @@
 import { type FSWatcher, closeSync, openSync, readSync, statSync, watch } from 'node:fs'
 
-import type { ChatItem, ChatPage } from '../shared/types.js'
+import type { ChatItem, ChatPage, FileChange, Hunk } from '../shared/types.js'
 import { locate } from './usage.js'
 
 // The first read of a long chat shows its latest part only; the page asks for the rest as it grows.
 const FIRST_READ = 3_000_000
 const RESULT_MAX = 2_000
+// A diff stays readable in the chat up to about this size; past it the card says lines were left out.
+const CHANGE_LINES = 400
+const LINE_MAX = 500
 
 type Block = {
   type?: string
@@ -26,6 +29,8 @@ type Line = {
   isCompactSummary?: boolean
   message?: { role?: string; content?: string | Block[] }
   attachment?: { type?: string; prompt?: unknown }
+  /** What a tool did, as Claude Code records it beside the tool's reply (an edit's patch, a new file's text). */
+  toolUseResult?: { type?: unknown; filePath?: unknown; content?: unknown; structuredPatch?: unknown }
 }
 
 const tag = (text: string, name: string) => new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(text)?.[1]?.trim()
@@ -77,6 +82,60 @@ function summarise(name: string, input: Record<string, unknown> = {}): string {
   }
 }
 
+const linesOf = (text: string) => text.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n')
+const str = (value: unknown) => (typeof value === 'string' ? value : '')
+
+/** The change cut down to CHANGE_LINES lines in all. */
+function clipped(change: FileChange): FileChange {
+  let left = CHANGE_LINES
+  let isClipped = false
+  const hunks: Hunk[] = []
+  for (const hunk of change.hunks) {
+    if (left <= 0) {
+      isClipped = true
+      break
+    }
+    const lines = hunk.lines.slice(0, left).map(line => clip(line, LINE_MAX))
+    if (lines.length < hunk.lines.length) isClipped = true
+    left -= lines.length
+    hunks.push({ ...hunk, lines })
+  }
+  return { ...change, hunks, ...(isClipped && { isClipped }) }
+}
+
+const swap = (old: string, next: string): Hunk => ({
+  oldStart: 0,
+  newStart: 0,
+  lines: [...(old ? linesOf(old).map(line => `-${line}`) : []), ...(next ? linesOf(next).map(line => `+${line}`) : [])],
+})
+
+/** The change an edit tool asks for, read from its input. Line numbers come later, with its result. */
+function plannedChange(name: string, input: Record<string, unknown> = {}): FileChange | undefined {
+  const file = str(input.file_path)
+  if (!file) return undefined
+  if (name === 'Write') return clipped({ file, mode: 'rewrite', hunks: [{ oldStart: 0, newStart: 1, lines: linesOf(str(input.content)).map(line => `+${line}`) }] })
+  if (name === 'Edit') return clipped({ file, mode: 'edit', hunks: [swap(str(input.old_string), str(input.new_string))] })
+  if (name === 'MultiEdit' && Array.isArray(input.edits)) {
+    const edits = input.edits as { old_string?: unknown; new_string?: unknown }[]
+    return clipped({ file, mode: 'edit', hunks: edits.map(edit => swap(str(edit?.old_string), str(edit?.new_string))) })
+  }
+  return undefined
+}
+
+/** The change an edit made, as Claude Code recorded it: real line numbers and a few lines around each hunk. */
+function madeChange(result: Line['toolUseResult']): FileChange | undefined {
+  const file = str(result?.filePath)
+  if (!result || !file) return undefined
+  if (result.type === 'create' && typeof result.content === 'string')
+    return clipped({ file, mode: 'create', hunks: [{ oldStart: 0, newStart: 1, lines: linesOf(result.content).map(line => `+${line}`) }] })
+  const patch = (Array.isArray(result.structuredPatch) ? result.structuredPatch : []) as { oldStart?: unknown; newStart?: unknown; lines?: unknown }[]
+  const hunks = patch
+    .filter(hunk => Array.isArray(hunk?.lines))
+    .map(hunk => ({ oldStart: Number(hunk.oldStart) || 0, newStart: Number(hunk.newStart) || 0, lines: (hunk.lines as unknown[]).filter(line => typeof line === 'string') }))
+  if (!hunks.length) return undefined
+  return clipped({ file, mode: result.type === 'update' ? 'rewrite' : 'edit', hunks })
+}
+
 const resultText = (content: unknown): string => {
   if (typeof content === 'string') return content
   if (Array.isArray(content))
@@ -113,7 +172,15 @@ function itemsOf(line: Line, at: number): ChatItem[] {
     const typedParts: string[] = []
     for (const [n, block] of (content ?? []).entries()) {
       if (block.type === 'tool_result' && block.tool_use_id) {
-        items.push({ kind: 'result', id: `${id}:${n}`, toolUseId: block.tool_use_id, text: clip(resultText(block.content), RESULT_MAX), isError: block.is_error || undefined })
+        const change = block.is_error ? undefined : madeChange(line.toolUseResult)
+        items.push({
+          kind: 'result',
+          id: `${id}:${n}`,
+          toolUseId: block.tool_use_id,
+          text: clip(resultText(block.content), RESULT_MAX),
+          isError: block.is_error || undefined,
+          ...(change && { change }),
+        })
       } else if (block.type === 'text' && block.text) {
         const text = typed(block.text)
         if (text) typedParts.push(text)
@@ -131,7 +198,8 @@ function itemsOf(line: Line, at: number): ChatItem[] {
     const items: ChatItem[] = []
     for (const [n, block] of (content ?? []).entries()) {
       if (block.type === 'text' && block.text?.trim()) items.push({ kind: 'assistant', id: `${id}:${n}`, at: when, text: block.text })
-      if (block.type === 'tool_use' && block.id && block.name)
+      if (block.type === 'tool_use' && block.id && block.name) {
+        const change = plannedChange(block.name, block.input)
         items.push({
           kind: 'tool',
           id: block.id,
@@ -139,7 +207,9 @@ function itemsOf(line: Line, at: number): ChatItem[] {
           name: block.name,
           summary: summarise(block.name, block.input),
           isBackground: block.input?.run_in_background === true || undefined,
+          ...(change && { change }),
         })
+      }
     }
     return items
   }

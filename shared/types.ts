@@ -265,12 +265,30 @@ export type NextStep = {
   isOffSprint: boolean
 }
 
+/** One hunk of a file change in unified-diff form: each line starts with ' ', '-' or '+'. */
+export type Hunk = {
+  /** First line number on each side; 0 when not known yet (the edit has not run). */
+  oldStart: number
+  newStart: number
+  lines: string[]
+}
+
+/** What an edit tool changes in a file, so the chat can show it as a diff. */
+export type FileChange = {
+  file: string
+  /** A new file, or a whole file written over; else an edit of part of one. */
+  mode: 'create' | 'rewrite' | 'edit'
+  hunks: Hunk[]
+  /** Lines were left out to keep the chat light. */
+  isClipped?: boolean
+}
+
 /** One entry of a chat's conversation, as the chat view shows it. */
 export type ChatItem =
   | { kind: 'user'; id: string; at?: string; text: string }
   | { kind: 'assistant'; id: string; at?: string; text: string }
-  | { kind: 'tool'; id: string; at?: string; name: string; summary: string; isBackground?: boolean }
-  | { kind: 'result'; id: string; toolUseId: string; text: string; isError?: boolean }
+  | { kind: 'tool'; id: string; at?: string; name: string; summary: string; isBackground?: boolean; change?: FileChange }
+  | { kind: 'result'; id: string; toolUseId: string; text: string; isError?: boolean; change?: FileChange }
   | { kind: 'notice'; id: string; at?: string; text: string }
 
 /** A slice of a chat's conversation: what was written from byte `from` up to `next`. */

@@ -4,12 +4,14 @@ import { type ReactNode, memo, useEffect, useLayoutEffect, useMemo, useRef, useS
 
 import type { ChatItem, ChatPage, TerminalState, ChatPrompt } from '../../shared/types'
 import { projectId } from './api'
+import { ChangeCard } from './Diff'
 
 type Tool = Extract<ChatItem, { kind: 'tool' }>
 type Result = Extract<ChatItem, { kind: 'result' }>
 type Entry =
   | Exclude<ChatItem, Tool | Result>
   | { kind: 'steps'; id: string; tools: Tool[] }
+  | { kind: 'change'; id: string; tool: Tool }
 
 // How many entries are drawn at first, and how many more each "Show earlier" adds.
 const PAGE = 80
@@ -76,11 +78,18 @@ const since = (iso: string | undefined, now: number) => {
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`
 }
 
-/** Tool calls in a row fold into one line; the results are matched to their calls by id. */
+/**
+ * Tool calls in a row fold into one line; the results are matched to their calls by id. A file edit
+ * stands on its own as a diff, since what Claude writes is what you are there to follow.
+ */
 function entriesOf(items: ChatItem[]): Entry[] {
   const out: Entry[] = []
   for (const item of items) {
     if (item.kind === 'result') continue
+    if (item.kind === 'tool' && item.change) {
+      out.push({ kind: 'change', id: `change-${item.id}`, tool: item })
+      continue
+    }
     if (item.kind === 'tool') {
       const last = out.at(-1)
       if (last?.kind === 'steps') last.tools.push(item)
@@ -242,13 +251,18 @@ function Composer({ termKey, isLive, state, onSend, onEscape, onResume, onShowTe
     <div className="chat-composer">
       {choice && (
         <div className="chat-choice" role="group" aria-label={choice.question || 'Claude is asking'}>
-          {choice.header && <div className="chat-choice-tabs">{choice.header}</div>}
           <div className="chat-choice-head">
-            <strong>{choice.question || 'Claude is asking:'}</strong>
+            <span className="chat-choice-tabs">{choice.header || 'Claude is asking'}</span>
             <button className="chat-choice-terminal" onClick={onShowTerminal} title="Answer in the terminal instead">
               Terminal ↗
             </button>
           </div>
+          {/* Questions carry markdown (bold, code, lists) that the terminal shows raw. */}
+          {choice.question && (
+            <div className="chat-choice-question">
+              <Markdown text={choice.question} />
+            </div>
+          )}
           <div className={`chat-choice-options${choice.details ? ' detailed' : ''}`}>
             {choice.options.map((option, index) => {
               if (index === choice.typed) return null
@@ -515,6 +529,7 @@ export function ChatView({ termKey, ...composer }: { termKey: string } & Compose
         )}
         {shown.map(entry => {
           if (entry.kind === 'steps') return <Steps key={entry.id} tools={entry.tools} results={results} />
+          if (entry.kind === 'change') return <ChangeCard key={entry.id} tool={entry.tool} result={results.get(entry.tool.id)} />
           if (entry.kind === 'user')
             return (
               <div key={entry.id} className="chat-user">
