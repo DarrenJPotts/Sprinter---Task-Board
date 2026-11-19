@@ -19,6 +19,24 @@ export type Pr = {
   openThreads: number
 }
 
+/** The checks a PR's builds report: none set up (or none started), still running, all passed, or one failed. */
+export type Checks = 'none' | 'running' | 'pass' | 'fail'
+
+/** One of your own PRs, for the PR view: linked to a story or not. */
+export type MyPr = Pr & {
+  /** The branch it merges into. */
+  target: string
+  /** Read from the branch: a spec, an implementation, or a ship PR into an environment branch. */
+  kind: 'spec' | 'impl' | 'ship' | 'other'
+  /** The work item it belongs to, from its branch name or its links. */
+  storyId?: number
+  approvals: number
+  changesAsked: number
+  checks: Checks
+  createdAt: string
+  closedAt?: string
+}
+
 export type Story = {
   id: number
   type: string
@@ -41,7 +59,14 @@ export type Story = {
 export type Sprint = { name: string; path: string; start: string; finish: string }
 
 /** `columns` are the tracker board's own columns, in its order. */
-export type Board = { sprint: Sprint; stories: Story[]; columns: string[]; fetchedAt: number }
+export type Board = {
+  sprint: Sprint
+  stories: Story[]
+  columns: string[]
+  fetchedAt: number
+  /** Your open PRs and those completed lately; absent on a board saved before the PR view. */
+  prs?: MyPr[]
+}
 
 export type TrackerKind = 'ado' | 'github'
 export type Workflow = 'aidlc' | 'plain'

@@ -30,6 +30,11 @@ export function tourSteps(workflow: Workflow): TourStep[] {
       target: byText('.views .view', 'Plan'),
     },
     {
+      title: 'PRs',
+      body: "Your own pull requests by whose move it is: yours (threads, changes asked, a failed build, a draft), a reviewer's, ready for a person to complete, or done. To review lists other people's, those nobody has approved first; ✎ has the Reviewer draft one. The badge counts your own that wait on you.",
+      target: byText('.views .view', 'PRs'),
+    },
+    {
       title: 'Pinned chats',
       body: 'Standing Claude chats. A Fresh run starts a new conversation with its prompt every press; Keep chat reopens the same conversation. ＋ Pin adds one.',
       target: first('.tool.pin'),

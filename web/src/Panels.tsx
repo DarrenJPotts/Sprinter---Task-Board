@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-import { reviewThreads } from '../../shared/model'
+import { isReviewWaiting, reviewThreads } from '../../shared/model'
 import type { HealthCheck, LogEntry, NewProject, Pin, ProjectSummary, ReviewPr, Settings, Story, TerminalInfo, WorkflowChoice } from '../../shared/types'
 import { api, clearPageErrors, onPageError, pageErrors } from './api'
 import { useKeepOnScreen } from './onScreen'
@@ -310,7 +310,7 @@ export function Reviews(props: {
   onClose: () => void
 }) {
   const { reviews, isReviewerUp } = props
-  const waiting = reviews.filter(r => !r.isDraft && r.approvals === 0)
+  const waiting = reviews.filter(isReviewWaiting)
 
   return (
     <div className="popover reviews">

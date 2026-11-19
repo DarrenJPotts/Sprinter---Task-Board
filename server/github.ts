@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 
-import type { Board, Pr, ReviewPr, Sprint, Story } from '../shared/types.js'
+import { prKind } from '../shared/model.js'
+import type { Board, Checks, MyPr, ReviewPr, Sprint, Story } from '../shared/types.js'
 import type { GitHubConfig } from './config.js'
 
 // GitHub through the signed-in `gh` CLI's token: GraphQL for projects, PRs and review threads.
@@ -237,14 +238,18 @@ type PullNode = {
   url: string
   isDraft: boolean
   headRefName: string
+  baseRefName: string
   createdAt: string
+  mergedAt: string | null
+  commits: { nodes: { commit: { statusCheckRollup: { state: string } | null } }[] }
   author: { login: string } | null
   reviews: { nodes: { state: string; author: { login: string } | null }[] }
   reviewThreads: { nodes: { isResolved: boolean; comments: { nodes: { author: { login: string } | null }[] } }[] }
   closingIssuesReferences: { nodes: { number: number }[] }
 }
 
-const PULL_FIELDS = `number title url isDraft headRefName createdAt author { login }
+const PULL_FIELDS = `number title url isDraft headRefName baseRefName createdAt mergedAt author { login }
+  commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
   reviews(last: 30) { nodes { state author { login } } }
   reviewThreads(first: 100) { nodes { isResolved comments(first: 1) { nodes { author { login } } } } }
   closingIssuesReferences(first: 5) { nodes { number } }`
@@ -267,37 +272,58 @@ function verdicts(pr: PullNode) {
   return { approvals: states.filter(s => s === 'APPROVED').length, changes: states.filter(s => s === 'CHANGES_REQUESTED').length }
 }
 
-/** Your open PRs, tied to the issues they close (or name in their branch). */
-async function myPullsByIssue(config: GitHubConfig, login: string): Promise<Map<number, Pr[]>> {
-  const byIssue = new Map<number, Pr[]>()
-  for (const pr of await pulls(`repo:${config.repo} is:pr is:open author:@me`)) {
+const CHECKS: Record<string, Checks> = { SUCCESS: 'pass', FAILURE: 'fail', ERROR: 'fail', PENDING: 'running', EXPECTED: 'running' }
+
+// A PR merged within this window still shows, in the PR view's Done lane.
+const RECENT_DAYS = 14
+
+/** Your open PRs and those merged lately, tied to the issue each closes (or names in its branch). */
+async function myPulls(config: GitHubConfig, login: string, now: number): Promise<{ prs: MyPr[]; issuesOf: Map<number, number[]> }> {
+  const since = new Date(now - RECENT_DAYS * 86_400_000).toISOString().slice(0, 10)
+  const [open, merged] = await Promise.all([
+    pulls(`repo:${config.repo} is:pr is:open author:@me`),
+    pulls(`repo:${config.repo} is:pr is:merged author:@me merged:>=${since}`),
+  ])
+  const issuesOf = new Map<number, number[]>()
+  const prs = [...open, ...merged].map((pr): MyPr => {
     const linked = pr.closingIssuesReferences.nodes.map(n => n.number)
     const fromBranch = /(?:^|\/)(\d+)[-_]/.exec(pr.headRefName)
     const issues = linked.length > 0 ? linked : fromBranch ? [Number(fromBranch[1])] : []
+    issuesOf.set(pr.number, issues)
+    const storyId = issues[0]
     const { approvals, changes } = verdicts(pr)
-    const entry: Pr = {
+    const isCompleted = Boolean(pr.mergedAt)
+    const rollup = pr.commits.nodes[0]?.commit.statusCheckRollup?.state
+    return {
       id: pr.number,
       title: pr.title,
       branch: pr.headRefName,
+      target: pr.baseRefName,
+      kind: prKind(pr.headRefName, pr.baseRefName),
+      ...(storyId && { storyId }),
       isDraft: pr.isDraft,
       url: pr.url,
       vote: changes > 0 ? -10 : approvals > 0 ? 10 : 0,
-      isCompleted: false,
-      openThreads: pr.reviewThreads.nodes.filter(t => !t.isResolved && t.comments.nodes[0]?.author?.login !== login).length,
+      approvals,
+      changesAsked: changes,
+      isCompleted,
+      openThreads: isCompleted ? 0 : pr.reviewThreads.nodes.filter(t => !t.isResolved && t.comments.nodes[0]?.author?.login !== login).length,
+      checks: isCompleted ? 'none' : (rollup && CHECKS[rollup]) || 'none',
+      createdAt: pr.createdAt,
+      ...(pr.mergedAt && { closedAt: pr.mergedAt }),
     }
-    for (const issue of issues) byIssue.set(issue, [...(byIssue.get(issue) ?? []), entry])
-  }
-
-  return byIssue
+  })
+  return { prs, issuesOf }
 }
 
 export async function readGitHubBoard(config: GitHubConfig, now: number): Promise<Board> {
   const login = await me()
   const base = config.projectNumber ? await projectBoard(config, login, now) : await issuesBoard(config, now)
-  const prs = await myPullsByIssue(config, login)
-  for (const story of base.stories) story.prs = prs.get(story.id) ?? []
+  const { prs, issuesOf } = await myPulls(config, login, now)
+  // A PR that closes several issues shows on each of their cards.
+  for (const story of base.stories) story.prs = prs.filter(pr => issuesOf.get(pr.id)?.includes(story.id))
 
-  return { ...base, fetchedAt: now }
+  return { ...base, fetchedAt: now, prs }
 }
 
 /** Other people's open PRs in the repo, oldest first: what the reviewer works through. */

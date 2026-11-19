@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import { WHENS, order, remainingHours, reviewThreads, shortDate, workingDaysLeft } from '../../shared/model'
+import { WHENS, isReviewWaiting, order, prLane, remainingHours, reviewThreads, shortDate, workingDaysLeft } from '../../shared/model'
 import { makeRules } from '../../shared/workflow'
 import type { Rules } from '../../shared/workflow'
 import type { PillColor } from '../../shared/model'
 import type { BgTask, ChatTime, OpeningPhase, Pin, Prefs, ProjectSummary, Snapshot, Story, TerminalInfo, TerminalState, TokenUsage, When } from '../../shared/types'
 import { api, setProject } from './api'
 import { Card, Tag, itemRef } from './Card'
+import { PrBoard } from './PrBoard'
 import { DialogHost, ask } from './Dialog'
 import { useKeepOnScreen } from './onScreen'
 import { SetupGuide } from './SetupGuide'
@@ -25,7 +26,7 @@ import { billed, compact, usageTitle } from './tokens'
 // The pin the Reviews panel drives; Setup can change its prompt and mode.
 const REVIEWER = 'reviewer'
 
-type View = 'board' | 'plan'
+type View = 'board' | 'plan' | 'prs'
 type Theme = 'auto' | 'light' | 'dark'
 const NEXT_THEME: Record<Theme, Theme> = { auto: 'light', light: 'dark', dark: 'auto' }
 const THEME_ICON: Record<Theme, string> = { auto: '◐', light: '☀', dark: '☾' }
@@ -270,7 +271,10 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
       // Storage refused: the tour may open again next visit.
     }
   }, [])
-  const reviewsWaiting = (snap?.reviews ?? []).filter(r => !r.isDraft && r.approvals === 0).length
+  const reviewsWaiting = (snap?.reviews ?? []).filter(isReviewWaiting).length
+  const myPrs = board?.prs ?? []
+  const prsOnYou = myPrs.filter(pr => prLane(pr) === 'mine').length
+  const refOf = (id: number) => (snap?.project.tracker === 'github' ? `#${id}` : `AB#${id}`)
   const usages = Object.values(snap?.usage ?? {})
   const today = usages.reduce((sum, u) => sum + u.today, 0)
   const total = usages.reduce((sum, u) => sum + billed(u), 0)
@@ -828,6 +832,9 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
           <button className={`view${view === 'plan' ? ' on' : ''}`} onClick={() => setView('plan')} title="Plan: cards by when">
             ☰<span className="label">Plan</span>
           </button>
+          <button className={`view${view === 'prs' ? ' on' : ''}`} onClick={() => setView('prs')} title="PRs: your pull requests by whose move it is">
+            ⇄<span className="label">PRs</span> {prsOnYou > 0 && <span className="badge">{prsOnYou}</span>}
+          </button>
           </div>
           <span className="divider" />
           <div data-group="tools" className={`bar-group${barCollapsed.includes('tools') ? ' collapsed' : ''}`}>
@@ -980,6 +987,26 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
         </div>
 
         <div className="board">
+          {view === 'prs' ? (
+            <PrBoard
+              prs={myPrs}
+              stories={byId}
+              rules={rules}
+              hints={hints}
+              isShown={isShown}
+              onOpenStory={key => openTab(key)}
+              refOf={refOf}
+              reviews={snap?.reviews ?? []}
+              isReviewerUp={terminalOf.get(REVIEWER)?.isAlive === true}
+              onDraftReview={id => {
+                // A Reviewer that is not running drafts every waiting review on its first tick, this one included.
+                if (terminalOf.get(REVIEWER)?.isAlive) void run(api.sendLine(REVIEWER, `Draft a review of PR ${id} now, following your brief.`))
+                else open(REVIEWER, api.openPin(REVIEWER))
+                openTab(REVIEWER)
+              }}
+            />
+          ) : (
+          <>
           {shown.map(lane => (
             <div
               key={lane.name}
@@ -1037,6 +1064,8 @@ function ProjectApp({ project, onSwitch, onNew }: { project: string; onSwitch: (
                 </button>
               ))}
             </div>
+          )}
+          </>
           )}
         </div>
         <div className="fabs">

@@ -1,4 +1,4 @@
-import type { PlanHint, Prefs, Story, Task, When } from './types.js'
+import type { MyPr, PlanHint, Prefs, ReviewPr, Story, Task, When } from './types.js'
 
 /** ADO board columns in flow order; a story's group on the board view. */
 export const COLUMNS = [
@@ -270,4 +270,55 @@ export function stageGroup(story: Story): StageGroup {
     default:
       return 'Not ready'
   }
+}
+
+// Branches a ship PR lands on: an environment, or the trunk.
+const SHIP_TARGET = /^(qa|uat|staging|prod(uction)?|master|main|release(\/.*)?)$/i
+
+/** What a PR is, from its branches: AI-DLC names spec, impl and ship branches; another branch into an environment ships too. */
+export function prKind(branch: string, target: string): MyPr['kind'] {
+  if (/(^|\/)spec\//.test(branch)) return 'spec'
+  if (/(^|\/)impl\//.test(branch)) return 'impl'
+  if (/(^|\/)ship\//.test(branch) || (SHIP_TARGET.test(target) && !SHIP_TARGET.test(branch))) return 'ship'
+  return 'other'
+}
+
+/** The work item a branch names: spec/123-x, impl/123-x, feat/123-x, ship/123-x. A bare number is too loose (a date reads as one). */
+export function itemOfBranch(branch: string): number | undefined {
+  const match = /(?:^|\/)(?:spec|impl|feat|feature|ship|fix|bug|bugfix|story)\/(\d+)[-_]/.exec(branch)
+  return match ? Number(match[1]) : undefined
+}
+
+export const PR_LANES = [
+  { lane: 'mine', name: 'Your move', color: 'red' },
+  { lane: 'theirs', name: 'Waiting on others', color: 'blue' },
+  { lane: 'ready', name: 'Ready to complete', color: 'green' },
+  { lane: 'done', name: 'Done', color: 'gray' },
+] as const satisfies readonly { lane: string; name: string; color: PillColor }[]
+export type PrLane = (typeof PR_LANES)[number]['lane']
+
+/** Someone else's PR waits on your review when nobody has approved it, it is not a draft, and no reviewer has sent it back to its author. */
+export const isReviewWaiting = (pr: ReviewPr) => !pr.isDraft && pr.approvals === 0 && pr.changesAsked === 0
+
+/** Whose move a PR waits on. */
+export function prLane(pr: MyPr): PrLane {
+  if (pr.isCompleted) return 'done'
+  if (pr.isDraft || pr.vote < 0 || pr.openThreads > 0 || pr.checks === 'fail') return 'mine'
+  if (pr.approvals > 0 && pr.checks !== 'running') return 'ready'
+  return 'theirs'
+}
+
+/** Why a PR sits in its lane, in a few words. */
+export function prReason(pr: MyPr): string {
+  if (pr.isCompleted) return 'Completed'
+  const yours = [
+    pr.checks === 'fail' && 'build failed',
+    pr.changesAsked > 0 && 'changes asked',
+    pr.openThreads > 0 && `${pr.openThreads} thread${pr.openThreads === 1 ? '' : 's'} to answer`,
+    pr.isDraft && 'draft: publish when ready',
+  ].filter(Boolean)
+  if (yours.length) return yours.join(' · ').replace(/^./, c => c.toUpperCase())
+  if (pr.checks === 'running') return 'Build running'
+  if (pr.approvals > 0) return `${pr.approvals} approval${pr.approvals === 1 ? '' : 's'}, nothing open`
+  return 'No reviewer has voted yet'
 }

@@ -76,6 +76,7 @@ export const api = {
   taskOutput: (file: string) => call<{ text: string; isCut: boolean; size: number }>(`/api/task-output?file=${encodeURIComponent(file)}`),
   openPin: (key: string) => call(`/api/pins/${key}`, { method: 'POST' }),
   sendEscape: (key: string) => call(`/api/terminals/${key}/escape`, { method: 'POST' }),
+  saveImage: (image: Blob) => call<{ path: string }>('/api/images', { method: 'POST', body: image, headers: { 'Content-Type': image.type } }),
   sendLine: (key: string, text: string) => call(`/api/terminals/${key}/line`, { method: 'POST', body: JSON.stringify({ text }) }),
   removeWorktree: (key: string) => call(`/api/worktrees/${key}`, { method: 'DELETE' }),
   health: () => call<HealthCheck[]>('/api/health'),

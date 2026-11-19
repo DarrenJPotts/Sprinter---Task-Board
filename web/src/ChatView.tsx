@@ -3,7 +3,7 @@ import { marked } from 'marked'
 import { type ReactNode, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import type { ChatItem, ChatPage, TerminalState, ChatPrompt } from '../../shared/types'
-import { projectId } from './api'
+import { api, projectId } from './api'
 import { ChangeCard } from './Diff'
 
 type Tool = Extract<ChatItem, { kind: 'tool' }>
@@ -69,6 +69,14 @@ function MessageMeta({ at, text }: { at?: string; text: string }) {
 
 // What you were typing in each chat, and what you sent there: kept while the app is open, so switching
 // tabs keeps a half-written message and ↑ brings back an earlier one.
+/** Claude Code swaps an image's path for "[Image #1]", so a sent message is matched to the transcript without either. */
+const withoutImages = (text: string) =>
+  text
+    .replace(/\[Image #\d+\]/g, ' ')
+    .replace(/\S+\.(png|jpe?g|gif|webp)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
 const drafts = new Map<string, string>()
 const history = new Map<string, string[]>()
 
@@ -174,6 +182,42 @@ function Composer({ termKey, isLive, state, onSend, onEscape, onResume, onShowTe
   const [isSending, setIsSending] = useState(false)
   const [error, setError] = useState('')
   const input = useRef<HTMLTextAreaElement>(null)
+  // Images still uploading; Send waits for them, so a message never goes without the paths it should carry.
+  const [attaching, setAttaching] = useState(0)
+  const shownKey = useRef(termKey)
+  shownKey.current = termKey
+
+  /** Saves pasted or dropped images and puts each one's path where the cursor is: Claude reads it from there. */
+  const attach = (files: File[]) => {
+    const images = files.filter(file => file.type.startsWith('image/'))
+    if (images.length === 0) return false
+    const key = termKey
+    setAttaching(count => count + images.length)
+    setError('')
+    void Promise.all(images.map(image => api.saveImage(image)))
+      .then(saved => {
+        const paths = saved.map(image => image.path).join(' ')
+        const old = drafts.get(key) ?? ''
+        // Switched to another chat while it uploaded: the path still lands in this chat's draft, at its end.
+        if (shownKey.current !== key) {
+          drafts.set(key, `${old}${old && !/\s$/.test(old) ? ' ' : ''}${paths} `)
+          return
+        }
+        const el = input.current
+        const start = el?.selectionStart ?? old.length
+        const before = old.slice(0, start)
+        const after = old.slice(el?.selectionEnd ?? start)
+        const head = `${before}${before && !/\s$/.test(before) ? ' ' : ''}${paths} `
+        setDraft(head + after.replace(/^\s+/, ''))
+        requestAnimationFrame(() => {
+          input.current?.focus()
+          input.current?.setSelectionRange(head.length, head.length)
+        })
+      })
+      .catch(caught => setError(`Could not attach the image: ${caught instanceof Error ? caught.message : String(caught)}`))
+      .finally(() => setAttaching(count => count - images.length))
+    return true
+  }
   // A question on screen (a permission prompt, a choice) reads keys, not a message: typing into it could pick an option.
   const isAsking = state === 'asking'
   // When the question's options can be read, they are answered here; otherwise only in the terminal.
@@ -190,7 +234,8 @@ function Composer({ termKey, isLive, state, onSend, onEscape, onResume, onShowTe
     try {
       await onChoose(index, text, isMoveOnly)
       if (isMoveOnly) return
-      setDraft('')
+      // Only a typed answer used the box; a picked option leaves a message being written (and its images) alone.
+      if (text !== undefined) setDraft('')
       onSent()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught))
@@ -216,7 +261,7 @@ function Composer({ termKey, isLive, state, onSend, onEscape, onResume, onShowTe
   const send = async () => {
     const text = draft.trim()
     if (isTypedAnswer && text) return pick(choice!.typed!, text)
-    if (!text || isSending || !isLive || isAsking) return
+    if (!text || isSending || attaching > 0 || !isLive || isAsking) return
     setIsSending(true)
     setError('')
     try {
@@ -334,10 +379,25 @@ function Composer({ termKey, isLive, state, onSend, onEscape, onResume, onShowTe
           rows={1}
           value={draft}
           placeholder={
-            isTypedAnswer ? 'Your own answer: Enter sends it' : isAsking ? 'Pick an answer above, or in the terminal' : 'Message Claude: Enter sends, Shift+Enter for a new line'
+            isTypedAnswer
+              ? 'Your own answer: Enter sends it'
+              : isAsking
+                ? 'Pick an answer above, or in the terminal'
+                : 'Message Claude: Enter sends, Shift+Enter for a new line, paste or drop an image to attach it'
           }
           disabled={isAsking && !isTypedAnswer}
           onChange={event => setDraft(event.target.value)}
+          onPaste={event => {
+            if (attach([...event.clipboardData.files])) event.preventDefault()
+          }}
+          onDragOver={event => {
+            if (event.dataTransfer.types.includes('Files')) event.preventDefault()
+          }}
+          onDrop={event => {
+            if (!attach([...event.dataTransfer.files])) return
+            event.preventDefault()
+            event.stopPropagation()
+          }}
           onKeyDown={event => {
             if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault()
@@ -363,8 +423,8 @@ function Composer({ termKey, isLive, state, onSend, onEscape, onResume, onShowTe
             ■ Esc
           </button>
         )}
-        <button className="tool primary" onClick={() => void send()} disabled={!draft.trim() || isSending || (isAsking && !isTypedAnswer)}>
-          {isSending ? 'Sending…' : 'Send ↵'}
+        <button className="tool primary" onClick={() => void send()} disabled={!draft.trim() || isSending || attaching > 0 || (isAsking && !isTypedAnswer)}>
+          {isSending ? 'Sending…' : attaching > 0 ? 'Attaching…' : 'Send ↵'}
         </button>
         {tools}
       </div>
@@ -445,7 +505,9 @@ export function ChatView({ termKey, ...composer }: { termKey: string } & Compose
     if (pending.length === 0) return
     const users = items.filter(i => i.kind === 'user')
     const left = pending.filter(
-      p => Date.now() - p.at < 60_000 && !users.some(u => u.kind === 'user' && Date.parse(u.at ?? '') >= p.at - 5_000 && u.text.includes(p.text.slice(0, 80))),
+      p =>
+        Date.now() - p.at < 60_000 &&
+        !users.some(u => u.kind === 'user' && Date.parse(u.at ?? '') >= p.at - 5_000 && withoutImages(u.text).includes(withoutImages(p.text).slice(0, 80))),
     )
     if (left.length !== pending.length) setPending(left)
   }, [items, pending])

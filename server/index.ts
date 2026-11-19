@@ -1,4 +1,5 @@
-import { closeSync, existsSync, openSync, readSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { closeSync, existsSync, mkdirSync, openSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { createServer } from 'node:http'
 import { dirname, join } from 'node:path'
@@ -358,6 +359,27 @@ app.post('/api/terminals/:key/escape', (req, res) => {
     res.json(snapshot(p))
   } catch (caught) {
     res.status(409).json({ message: message(caught) })
+  }
+})
+
+const IMAGE_EXT: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }
+
+// A chat box can only send text, so an image pasted there is kept with the project's data and goes in as its path.
+app.post('/api/images', express.raw({ type: Object.keys(IMAGE_EXT), limit: '25mb' }), (req, res) => {
+  const p = projectOf(req)
+  const ext = IMAGE_EXT[(req.headers['content-type'] ?? '').split(';')[0]!.trim()]
+  if (!ext || !Buffer.isBuffer(req.body) || req.body.length === 0) {
+    res.status(400).json({ message: `Only ${Object.keys(IMAGE_EXT).join(', ')} images can be attached` })
+    return
+  }
+  try {
+    const dir = join(p.config.dataDir, 'images')
+    mkdirSync(dir, { recursive: true })
+    const file = join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}.${ext}`)
+    writeFileSync(file, req.body)
+    res.json({ path: file })
+  } catch (caught) {
+    res.status(500).json({ message: message(caught) })
   }
 })
 

@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 
-import type { Board, Pr, ReviewPr, Sprint, Story, Task } from '../shared/types.js'
+import { itemOfBranch, prKind } from '../shared/model.js'
+import type { Board, Checks, MyPr, ReviewPr, Sprint, Story, Task } from '../shared/types.js'
 
 import type { AdoConfig } from './config.js'
 
@@ -187,7 +188,7 @@ export async function readBoard(io: AdoIo, config: AdoConfig, now: number): Prom
       iteration: str(f['System.IterationPath']),
       url: `https://dev.azure.com/${config.org}/${encodeURIComponent(config.project)}/_workitems/edit/${item.id}`,
       tasks: childTasks,
-      prs: prs.get(item.id) ?? [],
+      prs: prs.filter(pr => pr.storyId === item.id),
     }
   })
 
@@ -195,18 +196,21 @@ export async function readBoard(io: AdoIo, config: AdoConfig, now: number): Prom
   // Any column a story sits in that the board call missed still gets a lane, after the known ones.
   for (const story of stories) if (!columns.includes(story.column)) columns.push(story.column)
 
-  return { sprint, stories, columns, fetchedAt: now }
+  return { sprint, stories, columns, fetchedAt: now, prs }
 }
 
 type PullRequest = {
   pullRequestId: number
   title: string
   sourceRefName: string
+  targetRefName?: string
   status: string
   isDraft?: boolean
+  creationDate?: string
   closedDate?: string
   createdBy?: { id: string }
   reviewers?: { vote: number }[]
+  repository?: { project?: { id?: string } }
 }
 
 type Thread = {
@@ -270,44 +274,76 @@ export async function reviewQueue(io: AdoIo, config: AdoConfig): Promise<ReviewP
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 }
 
-async function myPullRequests(io: AdoIo, config: AdoConfig): Promise<Map<number, Pr[]>> {
-  if (!me) {
-    const data = await io.get<{ authenticatedUser: { id: string } }>(
-      `https://dev.azure.com/${encodeURIComponent(config.org)}/_apis/connectionData`,
-    )
-    me = data.authenticatedUser.id
-  }
+// Branch policies of this type are build validations; the others (reviewers, comments, work items) are not checks.
+const BUILD_POLICY = '0609b952-1397-4640-95ec-e00a01b2c241'
+
+type Evaluation = { status?: string; configuration?: { isEnabled?: boolean; type?: { id?: string } }; context?: { buildId?: number } }
+
+/** What the PR's build validations say: one failing fails it, one under way keeps it running. */
+async function checksOf(io: AdoIo, config: AdoConfig, pr: PullRequest): Promise<Checks> {
+  const projectId = pr.repository?.project?.id
+  if (!projectId) return 'none'
+  const artifact = encodeURIComponent(`vstfs:///CodeReview/CodeReviewId/${projectId}/${pr.pullRequestId}`)
+  const data = await io.get<{ value: Evaluation[] }>(`${base(config)}/_apis/policy/evaluations?artifactId=${artifact}&api-version=7.1-preview.1`)
+  const builds = data.value.filter(e => e.configuration?.type?.id === BUILD_POLICY && e.configuration.isEnabled !== false)
+  if (builds.some(e => e.status === 'rejected' || e.status === 'broken')) return 'fail'
+  // Queued with a build is one waiting for an agent; queued without one has not been started (or has expired).
+  if (builds.some(e => e.status === 'running' || (e.status === 'queued' && e.context?.buildId))) return 'running'
+  if (builds.length > 0 && builds.every(e => e.status === 'approved' || e.status === 'notApplicable')) return 'pass'
+  return 'none'
+}
+
+/** The work item a PR is linked to, for a branch that does not name one. */
+async function linkedItem(io: AdoIo, config: AdoConfig, pr: PullRequest): Promise<number | undefined> {
+  const data = await io.get<{ value: { id: string }[] }>(
+    `${base(config)}/_apis/git/repositories/${encodeURIComponent(config.repo)}/pullRequests/${pr.pullRequestId}/workitems?api-version=7.1`,
+  )
+  const id = Number(data.value[0]?.id)
+  return id > 0 ? id : undefined
+}
+
+/** Your active PRs in the repo and those completed in the last two weeks. */
+async function myPullRequests(io: AdoIo, config: AdoConfig): Promise<MyPr[]> {
+  const mine = await whoAmI(io, config)
   const list = (status: string, top: number) =>
     io.get<{ value: PullRequest[] }>(
-      `${base(config)}/_apis/git/repositories/${encodeURIComponent(config.repo)}/pullrequests?searchCriteria.status=${status}&searchCriteria.creatorId=${me}&$top=${top}&api-version=7.1`,
+      `${base(config)}/_apis/git/repositories/${encodeURIComponent(config.repo)}/pullrequests?searchCriteria.status=${status}&searchCriteria.creatorId=${mine}&$top=${top}&api-version=7.1`,
     )
   const [active, completed] = await Promise.all([list('active', 100), list('completed', 30)])
   const recent = completed.value.filter(pr => pr.closedDate && Date.now() - Date.parse(pr.closedDate) < RECENT_MS)
 
-  const byItem = new Map<number, Pr[]>()
-  await Promise.all(
-    [...active.value, ...recent].map(async pr => {
+  return Promise.all(
+    [...active.value, ...recent].map(async (pr): Promise<MyPr> => {
       const branch = pr.sourceRefName.replace(/^refs\/heads\//, '')
-      const match = /(?:^|\/)(?:spec|impl|feat)\/(\d+)-/.exec(`/${branch}`)
-      if (!match) return
-      const id = Number(match[1])
+      const target = (pr.targetRefName ?? '').replace(/^refs\/heads\//, '')
       const votes = (pr.reviewers ?? []).map(r => r.vote)
       const isCompleted = pr.status === 'completed'
-      const entry: Pr = {
+      const [openThreadCount, checks, storyId] = await Promise.all([
+        isCompleted ? 0 : openThreads(io, config, pr).catch(() => 0),
+        isCompleted ? ('none' as const) : checksOf(io, config, pr).catch(() => 'none' as const),
+        // A PR that brings a story's branch up to date belongs to the story it lands in.
+        itemOfBranch(branch) ?? itemOfBranch(target) ?? linkedItem(io, config, pr).catch(() => undefined),
+      ])
+      return {
         id: pr.pullRequestId,
         title: pr.title,
         branch,
+        target,
+        kind: prKind(branch, target),
+        ...(storyId && { storyId }),
         isDraft: pr.isDraft === true,
         url: `https://dev.azure.com/${config.org}/${encodeURIComponent(config.project)}/_git/${config.repo}/pullrequest/${pr.pullRequestId}`,
         vote: votes.length === 0 ? 0 : Math.min(...votes),
+        approvals: votes.filter(v => v >= 5).length,
+        changesAsked: votes.filter(v => v < 0).length,
         isCompleted,
-        openThreads: isCompleted ? 0 : await openThreads(io, config, pr).catch(() => 0),
+        openThreads: openThreadCount,
+        checks,
+        createdAt: pr.creationDate ?? '',
+        ...(pr.closedDate && { closedAt: pr.closedDate }),
       }
-      byItem.set(id, [...(byItem.get(id) ?? []), entry])
     }),
   )
-
-  return byItem
 }
 
 // Azure DevOps' own resource id, for an az CLI token.
